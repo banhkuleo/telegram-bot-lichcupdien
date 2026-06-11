@@ -690,56 +690,165 @@ def format_outage_messages(outages, tu_ngay, den_ngay, title_suffix=""):
 # EVN CPC (CENTRAL REGION) API CALLS
 
 def fetch_cpc_companies():
-    url = "https://cskh-api.cpc.vn/api/remote/organizations"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0',
-        'Accept': 'application/json, text/plain, */*',
-        'version': '1.0'
+    return {
+        "PC02": "Quảng Trị & Quảng Bình",
+        "PC03": "Thừa Thiên Huế",
+        "PP": "Đà Nẵng & Quảng Nam",
+        "PC06": "Quảng Ngãi & Kon Tum",
+        "PC10": "Gia Lai & Bình Định",
+        "PC12": "Đắk Lắk & Phú Yên",
+        "PQ": "Khánh Hòa",
+        "PB18": "Ninh Thuận"
     }
-    try:
-        # Note: verify=False is used because EVN servers frequently have SSL certificate configuration issues.
-        r = requests.get(url, headers=headers, verify=False, timeout=15)
-        if r.status_code == 200:
-            data = r.json()
-            companies = {}
-            for item in data:
-                code = item.get('code')
-                name = item.get('organizationName')
-                if code and code != "PC" and name:
-                    companies[code] = name
-            return companies
-        else:
-            print(f"Error fetching CPC companies (status {r.status_code}): {r.text}")
-            return {}
-    except Exception as e:
-        print(f"Error fetching CPC companies: {e}")
-        return {}
 
 def fetch_cpc_bureaus(parent_code):
-    url = f"https://cskh-api.cpc.vn/api/remote/organizations?maDonViCapTren={parent_code}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0',
-        'Accept': 'application/json, text/plain, */*',
-        'version': '1.0'
+    cpc_bureaus_map = {
+        "PC02": {
+            "PC02AA": "Điện lực Đông Hà",
+            "PC02DD": "Điện lực Vĩnh Linh",
+            "PC02CC": "Điện lực Gio Linh",
+            "PC02KK": "Điện lực Hải Lăng",
+            "PC02BB": "Điện lực Thành Cổ",
+            "PC02HH": "Điện lực Triệu Phong",
+            "PC02FF": "Điện lực Khe Sanh",
+            "PC02GG": "Điện lực Cam Lộ",
+            "PC02LL": "Điện lực ĐaKrông",
+            "PC02MM": "Điện lực Cồn Cỏ",
+            "PC01AA": "Điện lực Đồng Hới",
+            "PC01DD": "Điện lực Bố Trạch",
+            "PC01BB": "Điện lực Quảng Trạch",
+            "PC01EE": "Điện lực Tuyên Hóa",
+            "PC01CC": "Điện lực Quảng Ninh",
+            "PC01FF": "Điện lực Lệ Thủy",
+            "PC01MM": "Điện lực Minh Hóa"
+        },
+        "PC03": {
+            "PC03BB": "Điện lực Bắc Sông Hương",
+            "PC03AA": "Điện lực Nam Sông Hương",
+            "PC03PP": "Điện lực Hương Thủy",
+            "PC03CC": "Điện lực Phong Điền",
+            "PC03TT": "Điện lực Hương Trà",
+            "PC03DD": "Điện lực Phú Vang",
+            "PC03HH": "Điện lực Quảng Điền",
+            "PC03EE": "Điện lực A Lưới",
+            "PC03FF": "Điện lực Nam Đông",
+            "PC03GG": "Điện lực Phú Lộc"
+        },
+        "PP": {
+            "PP0100": "Điện lực Hải Châu",
+            "PP0300": "Điện lực Liên Chiểu",
+            "PP0500": "Điện lực Sơn Trà",
+            "PP0700": "Điện lực Cẩm Lệ",
+            "PP0900": "Điện lực Thanh Khê",
+            "PP0800": "Điện lực Hòa Vang",
+            "PC05GG": "Điện lực Đại Lộc",
+            "PC05CC": "Điện lực Hội An",
+            "PC05DD": "Điện lực Duy Xuyên",
+            "PC05FF": "Điện lực Thăng Bình",
+            "PC05HH": "Điện lực Hiệp Đức",
+            "PC05AA": "Điện lực Tam Kỳ",
+            "PC05BB": "Điện lực Núi Thành",
+            "PC05EE": "Điện lực Tiên Phước",
+            "PC05MM": "Điện lực Quế Sơn",
+            "PC05NN": "Điện lực Trà My",
+            "PC05II": "Điện lực Điện Bàn",
+            "PC05PP": "Điện lực Nam Giang",
+            "PC05KK": "Điện lực Đông Giang"
+        },
+        "PC06": {
+            "PC06AA": "Điện lực TP Quảng Ngãi",
+            "PC06BB": "Điện lực Bình Sơn",
+            "PC06TT": "Điện lực Trà Bồng",
+            "PC06SS": "Điện lực Sơn Tịnh",
+            "PC06HH": "Điện lực Sơn Hà",
+            "PC06EE": "Điện lực Tư Nghĩa",
+            "PC06NN": "Điện lực Nghĩa Hành",
+            "PC06MM": "Điện lực Mộ Đức",
+            "PC06DD": "Điện lực Đức Phổ",
+            "PC06CC": "Điện lực Ba Tơ",
+            "PC06LL": "Điện lực Lý Sơn",
+            "PC11AA": "Điện lực Thành phố Kon Tum",
+            "PC11DD": "Điện lực Đăk Hà",
+            "PC11EE": "Điện lực Sa Thầy",
+            "PC11CC": "Điện lực Đăk Tô",
+            "PC11FF": "Điện lực Ngọc Hồi",
+            "PC11GG": "Điện lực Đăk Glei",
+            "PC11BB": "Điện lực Kon Rẫy",
+            "PC11II": "Điện lực Kon PLong",
+            "PC11KK": "Điện lực Tu Mơ Rông"
+        },
+        "PC10": {
+            "PC10BB": "Điện lực An Khê",
+            "PC10CC": "Điện lực Ayun Pa",
+            "PC10II": "Điện lực Chư Păh",
+            "PC10EE": "Điện lực Chư Sê",
+            "PC10PP": "Điện lực Chư Pưh",
+            "PC10NN": "Điện lực Chư Prông",
+            "PC10HH": "Điện lực Đăk Đoa",
+            "PC10GG": "Điện lực Đức cơ",
+            "PC10FF": "Điện lực Kbang",
+            "PC10LL": "Điện lực Kông Chro",
+            "PC10DD": "Điện lực Krông Pa",
+            "PC10MM": "Điện lực Mang Yang",
+            "PC10OO": "Điện lực Phú Thiện",
+            "PC10KK": "Điện lực Ia Grai",
+            "PC10AA": "Điện lực Pleiku",
+            "PC07AA": "Điện lực Quy Nhơn",
+            "PC07FF": "Điện lực Phú Tài",
+            "PC07HH": "Điện lực Tuy Phước",
+            "PC07BB": "Điện lực An Nhơn",
+            "PC07GG": "Điện lực Phù Cát",
+            "PC07EE": "Điện lực Phù Mỹ",
+            "PC07CC": "Điện lực Bồng Sơn",
+            "PC07DD": "Điện lực Phú Phong",
+            "PC07II": "Điện lực Hoài Ân"
+        },
+        "PC12": {
+            "PC12CC": "Điện lực Nam Buôn Ma Thuột",
+            "PC12DD": "Điện lực Buôn Hồ",
+            "PC12GG": "Điện lực Cư M'gar",
+            "PC12AA": "Điện lực Bắc Buôn Ma Thuột",
+            "PC12JJ": "Điện lực Krông Năng",
+            "PC12II": "Điện lực Ea H'leo",
+            "PC12BB": "Điện lực Krông Pắc",
+            "PC12KK": "Điện lực Ea Kar",
+            "PC12NN": "Điện lực Krông Bông",
+            "PC12PP": "Điện lực Lắk",
+            "PC12LL": "Điện lực Krông Ana",
+            "PC12EE": "Điện lực Buôn Đôn",
+            "PC12MM": "Điện lực Ea Súp",
+            "PC12HH": "Điện lực Cư Kuin",
+            "PC08AA": "Điện lực Tuy Hòa",
+            "PC08CC": "Điện lực Đông Hòa",
+            "PC08II": "Điện lực Tây Hòa",
+            "PC08EE": "Điện lực Tuy An",
+            "PC08BB": "Điện lực Sông Cầu",
+            "PC08HH": "Điện lực Phú Hòa",
+            "PC08FF": "Điện lực Sông Hinh",
+            "PC08DD": "Điện lực Sơn Hòa",
+            "PC08GG": "Điện lực Đồng Xuân"
+        },
+        "PQ": {
+            "PQ0200": "Điện lực Trung tâm Nha Trang",
+            "PQ0300": "Điện lực Cam Ranh-Khánh Sơn",
+            "PQ0400": "Điện lực Ninh Hòa",
+            "PQ0500": "Điện lực Diên Khánh-Khánh Vĩnh",
+            "PQ0600": "Điện lực Vạn Ninh",
+            "PQ0900": "Điện lực Vĩnh Hải",
+            "PQ1000": "Điện lực Vĩnh Nguyên",
+            "PQ1100": "Điện lực Cam Lâm"
+        },
+        "PB18": {
+            "PB1801": "Điện lực Phan Rang",
+            "PB1802": "Điện lực Ninh Hải",
+            "PB1804": "Điện lực Ninh Phước",
+            "PB1805": "Điện lực Thuận Bắc",
+            "PB1806": "Điện lực Thuận Nam",
+            "PB1803": "Điện lực Ninh Sơn",
+            "PB1807": "Điện lực Trường Sa"
+        }
     }
-    try:
-        # Note: verify=False is used because EVN servers frequently have SSL certificate configuration issues.
-        r = requests.get(url, headers=headers, verify=False, timeout=15)
-        if r.status_code == 200:
-            data = r.json()
-            bureaus = {}
-            for item in data:
-                code = item.get('code')
-                name = item.get('organizationName')
-                if code and name:
-                    bureaus[code] = name
-            return bureaus
-        else:
-            print(f"Error fetching CPC bureaus (status {r.status_code}): {r.text}")
-            return {}
-    except Exception as e:
-        print(f"Error fetching CPC bureaus: {e}")
-        return {}
+    return cpc_bureaus_map.get(parent_code, {})
 
 # Direct outage fetch for CPC without CAPTCHA validation
 def fetch_cpc_outages_direct(org_code, bureau_code):
