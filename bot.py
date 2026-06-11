@@ -850,6 +850,28 @@ def fetch_cpc_bureaus(parent_code):
     }
     return cpc_bureaus_map.get(parent_code, {})
 
+# Helper to determine the parent CPC company code based on bureau prefix
+def get_cpc_org_code(bureau_code):
+    prefix_map = {
+        "PC01": "PC02",
+        "PC02": "PC02",
+        "PC03": "PC03",
+        "PP": "PP",
+        "PC05": "PP",
+        "PC06": "PC06",
+        "PC11": "PC06",
+        "PC10": "PC10",
+        "PC07": "PC10",
+        "PC12": "PC12",
+        "PC08": "PC12",
+        "PQ": "PQ",
+        "PB18": "PB18"
+    }
+    for prefix, parent in prefix_map.items():
+        if bureau_code.startswith(prefix):
+            return parent
+    return None
+
 # Direct outage fetch for CPC without CAPTCHA validation
 def fetch_cpc_outages_direct(org_code, bureau_code):
     url_outages = "https://cskh-api.cpc.vn/api/remote/outages/area"
@@ -1274,11 +1296,7 @@ def handle_cpc_bureau_select(call):
     )
     
     # Determine org_code
-    org_code = "PC02"
-    for p_code in ['PC02', 'PC03', 'PC06', 'PC10', 'PC12', 'PP', 'PQ', 'PB18']:
-        if bureau_code.startswith(p_code):
-            org_code = p_code
-            break
+    org_code = get_cpc_org_code(bureau_code) or "PC02"
             
     items = fetch_cpc_outages_direct(org_code, bureau_code)
     
@@ -1988,20 +2006,12 @@ def run_due_daily_notifications():
             cache_key = (company_code, bureau_code)
             
             # Determine region SPC vs CPC
-            is_cpc = False
-            for p_code in ['PC02', 'PC03', 'PC06', 'PC10', 'PC12', 'PP', 'PQ', 'PB18']:
-                if bureau_code.startswith(p_code):
-                    is_cpc = True
-                    break
+            org_code = get_cpc_org_code(bureau_code)
+            is_cpc = org_code is not None
             
             if cache_key not in schedule_cache:
                 if is_cpc:
                     # CPC direct fetch
-                    org_code = "PC02"
-                    for p_code in ['PC02', 'PC03', 'PC06', 'PC10', 'PC12', 'PP', 'PQ', 'PB18']:
-                        if bureau_code.startswith(p_code):
-                            org_code = p_code
-                            break
                     items = fetch_cpc_outages_direct(org_code, bureau_code)
                     if items is None:
                         schedule_cache[cache_key] = "Không thể kết nối hoặc hệ thống EVNCPC bận."
