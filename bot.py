@@ -660,39 +660,7 @@ def parse_spc_html_raw(html):
                     })
     return outages
 
-# Fetch outages for Customer Code (SPC)
-def fetch_outage_customer_spc(customer_code):
-    today = datetime.datetime.now()
-    tu_ngay = today.strftime("%d-%m-%Y")
-    den_ngay = (today + datetime.timedelta(days=7)).strftime("%d-%m-%Y")
-    
-    url = "https://www.cskh.evnspc.vn/TraCuu/GetThongTinLichNgungGiamCungCapDien"
-    params = {
-        'maKH': customer_code,
-        'tuNgay': tu_ngay,
-        'denNgay': den_ngay,
-        'ChucNang': 'MaKhachHang'
-    }
-    
-    full_url = f"{url}?{urllib.parse.urlencode(params)}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-    }
-    
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    
-    req = urllib.request.Request(full_url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, context=ctx) as response:
-            html = response.read().decode('utf-8')
-            raw_list = parse_spc_html_raw(html)
-            if not raw_list:
-                return f"ℹ️ Không có thông tin lịch cúp điện từ ngày **{tu_ngay}** đến **{den_ngay}**."
-            return format_outage_messages(raw_list, tu_ngay, den_ngay)
-    except Exception as e:
-        return f"❌ Đã xảy ra lỗi khi lấy dữ liệu: {e}"
+# Customer lookup removed
 
 # Format list of outages into message chunks
 def format_outage_messages(outages, tu_ngay, den_ngay, title_suffix=""):
@@ -724,18 +692,15 @@ def format_outage_messages(outages, tu_ngay, den_ngay, title_suffix=""):
 def fetch_cpc_companies():
     url = "https://cskh-api.cpc.vn/api/remote/organizations"
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0',
         'Accept': 'application/json, text/plain, */*',
         'version': '1.0'
     }
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    
-    req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, context=ctx) as response:
-            data = json.loads(response.read().decode('utf-8'))
+        # Note: verify=False is used because EVN servers frequently have SSL certificate configuration issues.
+        r = requests.get(url, headers=headers, verify=False, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
             companies = {}
             for item in data:
                 code = item.get('code')
@@ -743,6 +708,9 @@ def fetch_cpc_companies():
                 if code and code != "PC" and name:
                     companies[code] = name
             return companies
+        else:
+            print(f"Error fetching CPC companies (status {r.status_code}): {r.text}")
+            return {}
     except Exception as e:
         print(f"Error fetching CPC companies: {e}")
         return {}
@@ -750,18 +718,15 @@ def fetch_cpc_companies():
 def fetch_cpc_bureaus(parent_code):
     url = f"https://cskh-api.cpc.vn/api/remote/organizations?maDonViCapTren={parent_code}"
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0',
         'Accept': 'application/json, text/plain, */*',
         'version': '1.0'
     }
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    
-    req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, context=ctx) as response:
-            data = json.loads(response.read().decode('utf-8'))
+        # Note: verify=False is used because EVN servers frequently have SSL certificate configuration issues.
+        r = requests.get(url, headers=headers, verify=False, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
             bureaus = {}
             for item in data:
                 code = item.get('code')
@@ -769,6 +734,9 @@ def fetch_cpc_bureaus(parent_code):
                 if code and name:
                     bureaus[code] = name
             return bureaus
+        else:
+            print(f"Error fetching CPC bureaus (status {r.status_code}): {r.text}")
+            return {}
     except Exception as e:
         print(f"Error fetching CPC bureaus: {e}")
         return {}
@@ -827,11 +795,10 @@ def send_welcome(message):
     markup = InlineKeyboardMarkup(row_width=1)
     btn_spc = InlineKeyboardButton("⚡ EVN miền Nam (SPC)", callback_data="region_SPC")
     btn_cpc = InlineKeyboardButton("⚡ EVN miền Trung (CPC)", callback_data="region_CPC")
-    btn_customer = InlineKeyboardButton("🔍 Tra cứu theo Mã khách hàng (Miền Nam)", callback_data="menu_customer")
     btn_notify = InlineKeyboardButton("🔔 Nhận thông báo hằng ngày", callback_data="menu_notify")
     btn_feedback = InlineKeyboardButton("💬 Góp ý cải thiện", callback_data="menu_feedback")
     
-    markup.add(btn_spc, btn_cpc, btn_customer, btn_notify, btn_feedback)
+    markup.add(btn_spc, btn_cpc, btn_notify, btn_feedback)
     
     if is_admin_user(message.from_user.id):
         btn_admin_fb = InlineKeyboardButton("📋 Quản lý Góp ý (Admin)", callback_data="fb_list_unread")
@@ -849,11 +816,10 @@ def handle_back_main(call):
     markup = InlineKeyboardMarkup(row_width=1)
     btn_spc = InlineKeyboardButton("⚡ EVN miền Nam (SPC)", callback_data="region_SPC")
     btn_cpc = InlineKeyboardButton("⚡ EVN miền Trung (CPC)", callback_data="region_CPC")
-    btn_customer = InlineKeyboardButton("🔍 Tra cứu theo Mã khách hàng (Miền Nam)", callback_data="menu_customer")
     btn_notify = InlineKeyboardButton("🔔 Nhận thông báo hằng ngày", callback_data="menu_notify")
     btn_feedback = InlineKeyboardButton("💬 Góp ý cải thiện", callback_data="menu_feedback")
     
-    markup.add(btn_spc, btn_cpc, btn_customer, btn_notify, btn_feedback)
+    markup.add(btn_spc, btn_cpc, btn_notify, btn_feedback)
     
     if is_admin_user(call.from_user.id):
         btn_admin_fb = InlineKeyboardButton("📋 Quản lý Góp ý (Admin)", callback_data="fb_list_unread")
@@ -1262,90 +1228,7 @@ def handle_cpc_bureau_select(call):
     bot.send_message(chat_id, formatted_messages[-1], parse_mode="Markdown", reply_markup=markup)
 
 
-@bot.callback_query_handler(func=lambda call: call.data == 'menu_customer')
-def handle_menu_customer(call):
-    safe_answer_callback(call.id)
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-    
-    msg = bot.send_message(
-        call.message.chat.id,
-        "⌨️ Vui lòng nhập **Mã khách hàng** của bạn (Mã phải bắt đầu bằng **PB, PK hoặc PC** và có **đúng 13 ký tự**).\n\n"
-        "👉 Mã khách hàng tham khảo: `PB22030392316`\n\n"
-        "*(Hoặc gửi /start để quay lại menu chính)*",
-        parse_mode="Markdown"
-    )
-    bot.register_next_step_handler(msg, process_customer_code_step)
-
-def process_customer_code_step(message):
-    text = message.text.strip() if message.text else ""
-    
-    if text.startswith('/'):
-        bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
-        if text.startswith('/start') or text.startswith('/help'):
-            send_welcome(message)
-        return
-        
-    code = text.upper()
-    is_valid = len(code) == 13 and (code.startswith("PB") or code.startswith("PK") or code.startswith("PC"))
-    
-    if not is_valid:
-        msg = bot.reply_to(
-            message,
-            "❌ Mã khách hàng không đúng định dạng!\n"
-            "⚠️ Quy định: Mã khách hàng/đơn vị phải bắt đầu bằng **PB, PK hoặc PC** và có **đúng 13 ký tự**.\n\n"
-            "Vui lòng nhập lại (hoặc gửi /start để quay lại):",
-            parse_mode="Markdown"
-        )
-        bot.register_next_step_handler(msg, process_customer_code_step)
-        return
-        
-    loading_msg = bot.send_message(
-        message.chat.id,
-        f"🔄 Đang tra cứu lịch cúp điện cho mã khách hàng **{code}**..."
-    )
-    
-    schedule_data = fetch_outage_customer_spc(code)
-    bot.delete_message(message.chat.id, loading_msg.message_id)
-    
-    markup = InlineKeyboardMarkup()
-    markup.row(
-        InlineKeyboardButton("🔎 Tìm kiếm tiếp", callback_data="back_main"),
-        InlineKeyboardButton("🔄 Tải lại lịch", callback_data=f"refresh_cust_{code}")
-    )
-    
-    if isinstance(schedule_data, list):
-        for msg_chunk in schedule_data[:-1]:
-            bot.send_message(message.chat.id, msg_chunk, parse_mode="Markdown")
-        bot.send_message(message.chat.id, schedule_data[-1], parse_mode="Markdown", reply_markup=markup)
-    else:
-        bot.send_message(message.chat.id, schedule_data, parse_mode="Markdown", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('refresh_cust_'))
-def handle_refresh_customer(call):
-    code = call.data.split('_')[2]
-    safe_answer_callback(call.id, text=f"Đang làm mới dữ liệu cho {code}...")
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-    
-    loading_msg = bot.send_message(
-        call.message.chat.id,
-        f"🔄 Đang làm mới lịch cúp điện cho mã khách hàng **{code}**..."
-    )
-    
-    schedule_data = fetch_outage_customer_spc(code)
-    bot.delete_message(call.message.chat.id, loading_msg.message_id)
-    
-    markup = InlineKeyboardMarkup()
-    markup.row(
-        InlineKeyboardButton("🔎 Tìm kiếm tiếp", callback_data="back_main"),
-        InlineKeyboardButton("🔄 Tải lại lịch", callback_data=f"refresh_cust_{code}")
-    )
-    
-    if isinstance(schedule_data, list):
-        for msg_chunk in schedule_data[:-1]:
-            bot.send_message(call.message.chat.id, msg_chunk, parse_mode="Markdown")
-        bot.send_message(call.message.chat.id, schedule_data[-1], parse_mode="Markdown", reply_markup=markup)
-    else:
-        bot.send_message(call.message.chat.id, schedule_data, parse_mode="Markdown", reply_markup=markup)
+# Customer code callback handlers removed
 
 
 
