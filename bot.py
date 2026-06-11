@@ -25,6 +25,15 @@ if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
 # Initialize bot
 bot = telebot.TeleBot(BOT_TOKEN) if BOT_TOKEN else None
 
+# Safe callback query answering to prevent expired query exceptions
+def safe_answer_callback(call_id, text=None):
+    if not bot:
+        return
+    try:
+        bot.answer_callback_query(call_id, text=text)
+    except Exception as e:
+        print(f"Warning: Callback query answer expired/invalid: {e}")
+
 # No OCR engine needed anymore since CPC API allows direct fetch
 
 # Disable SSL warnings for requests
