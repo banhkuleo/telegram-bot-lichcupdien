@@ -1,0 +1,65 @@
+[
+  {
+    "id": "02afe585-2647-403d-86cb-d0efaf4feb9a",
+    "organizationName": "Tổng Công Ty Điện lực Miền Trung",
+    "closestManagementUnitId": "2c9811ec-bce9-4054-b80e-74cd57d5e781",
+    "closestSubManagementUnit1Id": "2c9811ec-bce9-4054-b80e-74cd57d5e781",
+    "code": "PC"
+  },
+  {
+    "id": "228c2b37-a548-4ad1-b140-ebbc9b095e18",
+    "organizationName": "Công ty Điện lực Quảng Trị",
+    "closestManagementUnitId": "228c2b37-a548-4ad1-b140-ebbc9b095e18",
+    "closestSubManagementUnit1Id": null,
+    "code": "PC02"
+  },
+  {
+    "id": "b5c2c6d6-5ca0-4566-bc30-fd6fa6a2e8d3",
+    "organizationName": "Công ty Điện lực Huế",
+    "closestManagementUnitId": "b5c2c6d6-5ca0-4566-bc30-fd6fa6a2e8d3",
+    "closestSubManagementUnit1Id": null,
+    "code": "PC03"
+  },
+  {
+    "id": "b9660257-17e0-43f2-bc73-06964ab5e5fc",
+    "organizationName": "Công ty Điện lực Đà Nẵng",
+    "closestManagementUnitId": "b9660257-17e0-43f2-bc73-06964ab5e5fc",
+    "closestSubManagementUnit1Id": null,
+    "code": "PP"
+  },
+  {
+    "id": "b30ec29c-d242-44c7-99c3-74ea16579da2",
+    "organizationName": "Công ty Điện lực Quảng Ngãi",
+    "closestManagementUnitId": "b30ec29c-d242-44c7-99c3-74ea16579da2",
+    "closestSubManagementUnit1Id": null,
+    "code": "PC06"
+  },
+  {
+    "id": "28f61967-38c4-4ddd-8db1-309cf932f27b",
+    "organizationName": "Công ty Điện lực Gia Lai",
+    "closestManagementUnitId": "28f61967-38c4-4ddd-8db1-309cf932f27b",
+    "closestSubManagementUnit1Id": null,
+    "code": "PC10"
+  },
+  {
+    "id": "05157b11-a50a-4da5-b05c-db1ea4a45cbf",
+    "organizationName": "Công ty Điện lực Đăk Lăk",
+    "closestManagementUnitId": "05157b11-a50a-4da5-b05c-db1ea4a45cbf",
+    "closestSubManagementUnit1Id": null,
+    "code": "PC12"
+  },
+  {
+    "id": "3e5fcf2f-4f6a-4a1b-a5fa-8f1c79d14254",
+    "organizationName": "Công ty CP Điện lực Khánh Hoà",
+    "closestManagementUnitId": "3e5fcf2f-4f6a-4a1b-a5fa-8f1c79d14254",
+    "closestSubManagementUnit1Id": null,
+    "code": "PQ"
+  },
+  {
+    "id": "39570617-8528-4c90-b5b7-7be72b604a0a",
+    "organizationName": "Công ty Điện lực Khánh Hòa",
+    "closestManagementUnitId": "39570617-8528-4c90-b5b7-7be72b604a0a",
+    "closestSubManagementUnit1Id": null,
+    "code": "PB18"
+  }
+]
