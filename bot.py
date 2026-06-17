@@ -1293,13 +1293,15 @@ def handle_spc_bureau(call):
         buttons.append(InlineKeyboardButton(f"{comm_name} ({len(items)})", callback_data=f"spc_comm_{comm_name}"))
         
     markup.add(*buttons)
-    markup.row(InlineKeyboardButton("🌟 Hiển thị tất cả", callback_data="spc_comm_all"))
-    markup.row(InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data="region_SPC"))
+    markup.row(
+        InlineKeyboardButton("🌟 Tất cả khu vực", callback_data="spc_comm_all"),
+        InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data="region_SPC")
+    )
     
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        text=f"🏢 **Tìm thấy lịch cúp điện tại {len(outages)} khu vực**.\n\nHãy chọn **Xã/Phường/Thị trấn** cần xem chi tiết:",
+        text=f"🏢 **Tìm thấy lịch cúp điện tại {len(outages)} khu vực**.\n\nVui lòng chọn xã/phường dưới đây để lọc tin nhắn hoặc chọn 'Tất cả khu vực':",
         reply_markup=markup
     )
 
