@@ -34,6 +34,15 @@ def safe_answer_callback(call_id, text=None):
     except Exception as e:
         print(f"Warning: Callback query answer expired/invalid: {e}")
 
+# Safe message deletion to prevent ApiTelegramException if message cannot be deleted
+def safe_delete_message(chat_id, message_id):
+    if not bot:
+        return
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception as e:
+        print(f"Warning: Could not delete message {message_id} in chat {chat_id}: {e}")
+
 # No OCR engine needed anymore since CPC API allows direct fetch
 
 # Disable SSL warnings for requests
@@ -1189,7 +1198,7 @@ def handle_spc_commune_select(call):
     chat_id = call.message.chat.id
     
     safe_answer_callback(call.id)
-    bot.delete_message(chat_id, call.message.message_id)
+    safe_delete_message(chat_id, call.message.message_id)
     
     session_data = USER_SESSIONS.get(chat_id)
     if not session_data or session_data.get('region') != 'SPC':
@@ -1231,12 +1240,12 @@ def handle_spc_ref_reload(call):
     chat_id = call.message.chat.id
     
     safe_answer_callback(call.id, text="Đang làm mới lịch cúp điện...")
-    bot.delete_message(chat_id, call.message.message_id)
+    safe_delete_message(chat_id, call.message.message_id)
     
     loading_msg = bot.send_message(chat_id, "🔄 Đang tải lại lịch cúp điện mới nhất...")
     
     outages = fetch_raw_outages_spc(bureau_code)
-    bot.delete_message(chat_id, loading_msg.message_id)
+    safe_delete_message(chat_id, loading_msg.message_id)
     
     if not outages:
         markup = InlineKeyboardMarkup()
@@ -1301,7 +1310,7 @@ def handle_cpc_bureau_select(call):
     items = fetch_cpc_outages_direct(org_code, bureau_code)
     
     # Delete the selection message to keep chat clean
-    bot.delete_message(chat_id, call.message.message_id)
+    safe_delete_message(chat_id, call.message.message_id)
     
     if items is None:
         # Failed to fetch outages
