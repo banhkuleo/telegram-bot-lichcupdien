@@ -1295,8 +1295,9 @@ def handle_spc_bureau(call):
     markup.add(*buttons)
     markup.row(
         InlineKeyboardButton("🌟 Tất cả khu vực", callback_data="spc_comm_all"),
-        InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data="region_SPC")
+        InlineKeyboardButton("🔍 Tìm theo từ khóa", callback_data="manual_kw_init")
     )
+    markup.row(InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data="region_SPC"))
     
     bot.edit_message_text(
         chat_id=call.message.chat.id,
@@ -1422,9 +1423,6 @@ def handle_cpc_bureau_select(call):
             
     items = fetch_cpc_outages_direct(org_code, bureau_code)
     
-    # Delete the selection message to keep chat clean
-    safe_delete_message(chat_id, call.message.message_id)
-    
     if items is None:
         # Failed to fetch outages
         markup = InlineKeyboardMarkup()
@@ -1432,9 +1430,10 @@ def handle_cpc_bureau_select(call):
             InlineKeyboardButton("🔎 Thử lại", callback_data=f"cpc_bur_{bureau_code}"),
             InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data="region_CPC")
         )
-        bot.send_message(
-            chat_id,
-            "❌ Hệ thống EVN miền Trung hiện tại đang bận hoặc không phản hồi. Vui lòng bấm thử lại:",
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            text="❌ Hệ thống EVN miền Trung hiện tại đang bận hoặc không phản hồi. Vui lòng bấm thử lại:",
             reply_markup=markup
         )
         return
@@ -1447,9 +1446,10 @@ def handle_cpc_bureau_select(call):
             InlineKeyboardButton("🔎 Tìm kiếm tiếp", callback_data="region_CPC"),
             InlineKeyboardButton("🔄 Tải lại lịch", callback_data=f"cpc_bur_{bureau_code}")
         )
-        bot.send_message(
-            chat_id, 
-            f"ℹ️ Không có thông tin lịch cúp điện từ ngày **{today.strftime('%d-%m-%Y')}** đến **{(today + datetime.timedelta(days=7)).strftime('%d-%m-%Y')}**.",
+        bot.edit_message_text(
+            chat_id=chat_id, 
+            message_id=call.message.message_id,
+            text=f"ℹ️ Không có thông tin lịch cúp điện từ ngày **{today.strftime('%d-%m-%Y')}** đến **{(today + datetime.timedelta(days=7)).strftime('%d-%m-%Y')}**.",
             parse_mode="Markdown",
             reply_markup=markup
         )
@@ -1464,17 +1464,32 @@ def handle_cpc_bureau_select(call):
             'reason': it.get('reason', 'N/A')
         })
         
-    formatted_messages = format_outage_messages(outages, today.strftime('%d-%m-%Y'), (today + datetime.timedelta(days=7)).strftime('%d-%m-%Y'))
+    bureau_name = bureau_code
+    companies = fetch_cpc_companies()
+    bureaus = fetch_cpc_bureaus(org_code)
+    if bureau_code in bureaus:
+        bureau_name = bureaus[bureau_code]
+        
+    USER_SESSIONS[chat_id] = {
+        'region': 'CPC',
+        'bureau_code': bureau_code,
+        'bureau_name': bureau_name,
+        'outages': outages
+    }
     
-    markup = InlineKeyboardMarkup()
+    markup = InlineKeyboardMarkup(row_width=2)
     markup.row(
-        InlineKeyboardButton("🔎 Tìm kiếm tiếp", callback_data="region_CPC"),
-        InlineKeyboardButton("🔄 Tải lại lịch", callback_data=f"cpc_bur_{bureau_code}")
+        InlineKeyboardButton("🌟 Xem tất cả", callback_data="cpc_view_all"),
+        InlineKeyboardButton("🔍 Tìm theo từ khóa", callback_data="manual_kw_init")
     )
+    markup.row(InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data="region_CPC"))
     
-    for msg_chunk in formatted_messages[:-1]:
-        bot.send_message(chat_id, msg_chunk, parse_mode="Markdown")
-    bot.send_message(chat_id, formatted_messages[-1], parse_mode="Markdown", reply_markup=markup)
+    bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=call.message.message_id,
+        text=f"🏢 **Lịch cúp điện {bureau_name}**\n\nTìm thấy {len(outages)} lịch cúp điện dự kiến.\n\nVui lòng chọn hình thức xem:",
+        reply_markup=markup
+    )
 
 
 # Customer code callback handlers removed
@@ -1612,7 +1627,6 @@ def handle_npc_bureau_select(call):
         'outages': outages,
         'communes': communes
     }
-    
     markup = InlineKeyboardMarkup(row_width=2)
     buttons = []
     for c_name in sorted_communes:
@@ -1624,8 +1638,9 @@ def handle_npc_bureau_select(call):
     
     markup.row(
         InlineKeyboardButton("🌟 Tất cả khu vực", callback_data="npc_ward_all"),
-        InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data=f"npc_comp_{company_code}" if company_code else "region_NPC")
+        InlineKeyboardButton("🔍 Tìm theo từ khóa", callback_data="manual_kw_init")
     )
+    markup.row(InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data=f"npc_comp_{company_code}" if company_code else "region_NPC"))
     
     today = datetime.datetime.now()
     welcome_text = (
@@ -1846,11 +1861,14 @@ def handle_sub_npc_bureau(call):
             'sub_communes': {},
             'sub_commune_list': []
         }
-        markup.row(InlineKeyboardButton("🌟 Đăng ký nhận toàn bộ huyện (Tất cả)", callback_data="sub_npc_comm_all"))
+        markup.row(
+            InlineKeyboardButton("🌟 Đăng ký nhận toàn bộ huyện (Tất cả)", callback_data="sub_npc_comm_all"),
+            InlineKeyboardButton("🔍 Đăng ký theo từ khóa tự chọn", callback_data="sub_kw_init")
+        )
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            text="ℹ️ Hiện tại không có lịch cúp điện dự kiến cho Điện lực này trong 15 ngày tới, nhưng bạn vẫn có thể đăng ký nhận tin nhắn hằng ngày cho toàn bộ huyện.",
+            text="ℹ️ Hiện tại không có lịch cúp điện dự kiến cho Điện lực này trong 15 ngày tới, nhưng bạn vẫn có thể đăng ký nhận tin nhắn hằng ngày cho toàn bộ huyện hoặc đăng ký theo từ khóa.",
             reply_markup=markup
         )
         return
@@ -1879,7 +1897,10 @@ def handle_sub_npc_bureau(call):
         buttons.append(InlineKeyboardButton(f"{name} ({len(communes[name])})", callback_data=f"sub_npc_comm_{idx}"))
     markup.add(*buttons)
     markup.row(InlineKeyboardButton("🌟 Đăng ký toàn bộ huyện (Tất cả)", callback_data="sub_npc_comm_all"))
-    markup.row(InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data=f"sub_npc_comp_{company_code}"))
+    markup.row(
+        InlineKeyboardButton("🔍 Đăng ký theo từ khóa tự chọn", callback_data="sub_kw_init"),
+        InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data=f"sub_npc_comp_{company_code}")
+    )
     
     bot.edit_message_text(
         chat_id=call.message.chat.id,
@@ -1941,7 +1962,7 @@ def handle_sub_npc_commune_select(call):
 
 # REGIONAL SUBSCRIPTION HANDLERS
 # EVN miền Nam (SPC) SUBSCRIPTION FLOW
-@bot.callback_query_handler(func=lambda call: call.data == 'sub_region_SPC')
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_notify')
 def handle_menu_notify(call):
     safe_answer_callback(call.id)
     text = (
@@ -2069,13 +2090,6 @@ def handle_sub_spc_bureau(call):
             InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data=f"sub_spc_comp_{company_code}"),
             InlineKeyboardButton("🔄 Thử lại", callback_data=f"sub_spc_bur_{company_code}_{bureau_code}")
         )
-        bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            text="ℹ️ Hiện tại không có lịch cúp điện dự kiến cho Điện lực này trong 7 ngày tới, nhưng bạn vẫn có thể đăng ký nhận tin nhắn hằng ngày cho toàn bộ huyện.",
-            reply_markup=markup
-        )
-        # We allow subscription to 'all' anyway
         USER_SESSIONS[call.message.chat.id] = {
             'sub_region': 'SPC',
             'sub_company_code': company_code,
@@ -2085,8 +2099,16 @@ def handle_sub_spc_bureau(call):
             'sub_communes': {},
             'sub_commune_list': []
         }
-        markup.row(InlineKeyboardButton("🌟 Đăng ký nhận toàn bộ huyện (Tất cả)", callback_data="sub_spc_comm_all"))
-        bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+        markup.row(
+            InlineKeyboardButton("🌟 Đăng ký nhận toàn bộ huyện (Tất cả)", callback_data="sub_spc_comm_all"),
+            InlineKeyboardButton("🔍 Đăng ký theo từ khóa tự chọn", callback_data="sub_kw_init")
+        )
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="ℹ️ Hiện tại không có lịch cúp điện dự kiến cho Điện lực này trong 7 ngày tới, nhưng bạn vẫn có thể đăng ký nhận tin nhắn hằng ngày cho toàn bộ huyện hoặc đăng ký theo từ khóa.",
+            reply_markup=markup
+        )
         return
         
     communes = {}
@@ -2113,7 +2135,10 @@ def handle_sub_spc_bureau(call):
         buttons.append(InlineKeyboardButton(f"{name} ({len(communes[name])})", callback_data=f"sub_spc_comm_{idx}"))
     markup.add(*buttons)
     markup.row(InlineKeyboardButton("🌟 Đăng ký toàn bộ huyện (Tất cả)", callback_data="sub_spc_comm_all"))
-    markup.row(InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data=f"sub_spc_comp_{company_code}"))
+    markup.row(
+        InlineKeyboardButton("🔍 Đăng ký theo từ khóa tự chọn", callback_data="sub_kw_init"),
+        InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data=f"sub_spc_comp_{company_code}")
+    )
     
     bot.edit_message_text(
         chat_id=call.message.chat.id,
@@ -2262,36 +2287,34 @@ def handle_sub_cpc_bureau(call):
     
     safe_answer_callback(call.id)
     
-    # For CPC, since we don't have ward categories, we subscribe the user immediately to the whole bureau.
     companies = fetch_cpc_companies()
     company_name = companies.get(company_code, "Công ty Điện lực")
     
     bureaus = fetch_cpc_bureaus(company_code)
     bureau_name = bureaus.get(bureau_code, bureau_code)
     
-    save_daily_subscription(
-        call,
-        company_code,
-        company_name,
-        bureau_code,
-        bureau_name,
-        "all",
-        "Tất cả"
+    USER_SESSIONS[call.message.chat.id] = {
+        'sub_region': 'CPC',
+        'sub_company_code': company_code,
+        'sub_company_name': company_name,
+        'sub_bureau_code': bureau_code,
+        'sub_bureau_name': bureau_name,
+        'sub_communes': {},
+        'sub_commune_list': []
+    }
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("🌟 Đăng ký toàn bộ huyện (Tất cả)", callback_data="sub_cpc_comm_all"),
+        InlineKeyboardButton("🔍 Đăng ký theo từ khóa tự chọn", callback_data="sub_kw_init"),
+        InlineKeyboardButton("⬅️ Chọn Điện lực khác", callback_data=f"sub_cpc_comp_{company_code}")
     )
     
-    text = (
-        "✅ **Đã đăng ký thông báo hằng ngày thành công!**\n\n"
-        f"Khu vực: **Tất cả các xã/huyện**\n"
-        f"Đơn vị: **{bureau_name}**\n"
-        f"Giờ gửi: **{DAILY_NOTIFY_TIME}** mỗi ngày\n\n"
-        "Bot sẽ tự động gửi lịch cúp điện mới nhất hằng ngày cho bạn."
-    )
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        text=text,
-        parse_mode="Markdown",
-        reply_markup=build_notification_actions_markup()
+        text=f"🔔 **Đăng ký thông báo - {bureau_name}**\n\nBạn muốn nhận thông báo cho toàn bộ huyện hay lọc theo từ khóa tự chọn?",
+        reply_markup=markup
     )
 
 # UTILITY SUBSCRIPTION MANAGEMENT
@@ -2622,8 +2645,11 @@ def run_due_daily_notifications():
                         f"Chi tiết: {source_data}"
                     )
                 else:
-                    # filter by ward if needed (for SPC and NPC, or all for CPC/all SPC/all NPC)
-                    if not is_cpc and sub['ward_key'] != 'all':
+                    # filter by ward or keyword if needed
+                    if sub['ward_key'].startswith('key:'):
+                        kw = remove_accents(sub['ward_key'].replace('key:', ''))
+                        outages = [item for item in source_data if (kw in remove_accents(item['location']) or kw in remove_accents(item['reason']))]
+                    elif not is_cpc and sub['ward_key'] != 'all':
                         outages = [item for item in source_data if extract_commune(item['location']) == sub['ward_key']]
                     else:
                         outages = source_data
@@ -2652,6 +2678,246 @@ def run_due_daily_notifications():
                 mark_subscription_sent(sub['id'], today_text)
     finally:
         NOTIFICATION_SEND_LOCK.release()
+
+@bot.callback_query_handler(func=lambda call: call.data == 'sub_cpc_comm_all')
+def handle_sub_cpc_comm_all(call):
+    chat_id = call.message.chat.id
+    safe_answer_callback(call.id)
+    
+    session_data = USER_SESSIONS.get(chat_id)
+    if not session_data or session_data.get('sub_region') != 'CPC':
+        bot.send_message(chat_id, "❌ Phiên làm việc hết hạn. Vui lòng thử lại.")
+        return
+        
+    save_daily_subscription(
+        call,
+        session_data['sub_company_code'],
+        session_data['sub_company_name'],
+        session_data['sub_bureau_code'],
+        session_data['sub_bureau_name'],
+        "all",
+        "Tất cả"
+    )
+    
+    text = (
+        "✅ **Đã đăng ký thông báo hằng ngày thành công!**\n\n"
+        f"Khu vực: **Tất cả các xã/huyện**\n"
+        f"Đơn vị: **{session_data['sub_bureau_name']}**\n"
+        f"Giờ gửi: **{DAILY_NOTIFY_TIME}** mỗi ngày\n\n"
+        "Bot sẽ tự động gửi lịch cúp điện mới nhất hằng ngày cho bạn."
+    )
+    bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=call.message.message_id,
+        text=text,
+        parse_mode="Markdown",
+        reply_markup=build_notification_actions_markup()
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == 'sub_kw_init')
+def handle_sub_kw_init(call):
+    chat_id = call.message.chat.id
+    safe_answer_callback(call.id)
+    
+    session_data = USER_SESSIONS.get(chat_id)
+    if not session_data:
+        bot.send_message(chat_id, "❌ Phiên làm việc hết hạn. Vui lòng thử lại.")
+        return
+        
+    bot.clear_step_handler_by_chat_id(chat_id=chat_id)
+    safe_delete_message(chat_id, call.message.message_id)
+    
+    msg = bot.send_message(
+        chat_id,
+        f"🔍 Bạn đang đăng ký thông báo cho **{session_data['sub_bureau_name']}**.\n\n"
+        "Vui lòng nhập từ khóa bạn muốn nhận thông báo (ví dụ: tên đường, thôn, xóm hoặc tên trạm biến áp, v.v.):\n"
+        "Ví dụ: `Hà Ra` hoặc `Nguyễn Thái Học` hoặc `Chung cư B`\n\n"
+        "Nhập /start để hủy bỏ đăng ký.",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(msg, process_sub_keyword_step)
+
+def process_sub_keyword_step(message):
+    chat_id = message.chat.id
+    text = message.text.strip() if message.text else ""
+    
+    if text.startswith('/'):
+        bot.clear_step_handler_by_chat_id(chat_id=chat_id)
+        if text.startswith('/start') or text.startswith('/help'):
+            send_welcome(message)
+        return
+        
+    if len(text) < 2:
+        msg = bot.reply_to(
+            message,
+            "❌ Từ khóa quá ngắn. Vui lòng nhập từ khóa có ít nhất 2 ký tự hoặc nhập /start để hủy."
+        )
+        bot.register_next_step_handler(msg, process_sub_keyword_step)
+        return
+        
+    if len(text) > 50:
+        msg = bot.reply_to(
+            message,
+            "❌ Từ khóa quá dài (tối đa 50 ký tự). Vui lòng nhập lại hoặc nhập /start để hủy."
+        )
+        bot.register_next_step_handler(msg, process_sub_keyword_step)
+        return
+        
+    session_data = USER_SESSIONS.get(chat_id)
+    if not session_data:
+        bot.send_message(chat_id, "❌ Phiên làm việc hết hạn. Vui lòng gửi /start để thực hiện lại.")
+        return
+        
+    ward_key = f"key:{text}"
+    ward_name = f"Từ khóa: {text}"
+    
+    class MockCall:
+        def __init__(self, msg_obj):
+            self.message = msg_obj
+            self.from_user = msg_obj.from_user
+            
+    mock_call = MockCall(message)
+    
+    save_daily_subscription(
+        mock_call,
+        session_data['sub_company_code'],
+        session_data['sub_company_name'],
+        session_data['sub_bureau_code'],
+        session_data['sub_bureau_name'],
+        ward_key,
+        ward_name
+    )
+    
+    resp_text = (
+        "✅ **Đã đăng ký thông báo hằng ngày thành công!**\n\n"
+        f"Đăng ký theo từ khóa: **{text}**\n"
+        f"Đơn vị: **{session_data['sub_bureau_name']}**\n"
+        f"Giờ gửi: **{DAILY_NOTIFY_TIME}** mỗi ngày\n\n"
+        f"Bot sẽ quét lịch cúp điện của **{session_data['sub_bureau_name']}** hằng ngày, nếu địa điểm cúp điện chứa từ khóa **\"{text}\"** thì bot sẽ gửi thông báo cho bạn."
+    )
+    bot.send_message(
+        chat_id,
+        resp_text,
+        parse_mode="Markdown",
+        reply_markup=build_notification_actions_markup()
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == 'cpc_view_all')
+def handle_cpc_view_all(call):
+    chat_id = call.message.chat.id
+    safe_answer_callback(call.id)
+    safe_delete_message(chat_id, call.message.message_id)
+    
+    session_data = USER_SESSIONS.get(chat_id)
+    if not session_data or session_data.get('region') != 'CPC':
+        bot.send_message(chat_id, "❌ Phiên làm việc hết hạn. Vui lòng gửi /start để thực hiện lại.")
+        return
+        
+    outages = session_data['outages']
+    bureau_code = session_data['bureau_code']
+    today = datetime.datetime.now()
+    
+    formatted_messages = format_outage_messages(outages, today.strftime('%d-%m-%Y'), (today + datetime.timedelta(days=7)).strftime('%d-%m-%Y'))
+    
+    markup = InlineKeyboardMarkup()
+    markup.row(
+        InlineKeyboardButton("🔎 Tìm kiếm tiếp", callback_data="region_CPC"),
+        InlineKeyboardButton("🔄 Tải lại lịch", callback_data=f"cpc_bur_{bureau_code}")
+    )
+    
+    for msg_chunk in formatted_messages[:-1]:
+        bot.send_message(chat_id, msg_chunk, parse_mode="Markdown")
+    bot.send_message(chat_id, formatted_messages[-1], parse_mode="Markdown", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'manual_kw_init')
+def handle_manual_kw_init(call):
+    chat_id = call.message.chat.id
+    safe_answer_callback(call.id)
+    
+    session_data = USER_SESSIONS.get(chat_id)
+    if not session_data:
+        bot.send_message(chat_id, "❌ Phiên làm việc hết hạn. Vui lòng gửi /start để thực hiện lại.")
+        return
+        
+    bot.clear_step_handler_by_chat_id(chat_id=chat_id)
+    safe_delete_message(chat_id, call.message.message_id)
+    
+    msg = bot.send_message(
+        chat_id,
+        f"🔍 Tra cứu lịch cúp điện theo từ khóa tại **{session_data.get('bureau_name', 'Đơn vị đã chọn')}**.\n\n"
+        "Vui lòng nhập từ khóa bạn muốn tìm kiếm (ví dụ: tên đường, thôn, xóm, trạm biến áp, v.v.):\n"
+        "Ví dụ: `Mỹ Long` hoặc `Thôn 3` hoặc `Hà Ra`\n\n"
+        "Nhập /start để hủy bỏ tra cứu.",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(msg, process_manual_keyword_step)
+
+def process_manual_keyword_step(message):
+    chat_id = message.chat.id
+    text = message.text.strip() if message.text else ""
+    
+    if text.startswith('/'):
+        bot.clear_step_handler_by_chat_id(chat_id=chat_id)
+        if text.startswith('/start') or text.startswith('/help'):
+            send_welcome(message)
+        return
+        
+    if len(text) < 2:
+        msg = bot.reply_to(
+            message,
+            "❌ Từ khóa quá ngắn. Vui lòng nhập từ khóa có ít nhất 2 ký tự hoặc nhập /start để hủy."
+        )
+        bot.register_next_step_handler(msg, process_manual_keyword_step)
+        return
+        
+    session_data = USER_SESSIONS.get(chat_id)
+    if not session_data:
+        bot.send_message(chat_id, "❌ Phiên làm việc hết hạn. Vui lòng gửi /start để thực hiện lại.")
+        return
+        
+    outages = session_data['outages']
+    region = session_data['region']
+    bureau_code = session_data['bureau_code']
+    
+    clean_keyword = remove_accents(text)
+    filtered_outages = []
+    for item in outages:
+        clean_location = remove_accents(item['location'])
+        clean_reason = remove_accents(item['reason'])
+        if clean_keyword in clean_location or clean_keyword in clean_reason:
+            filtered_outages.append(item)
+            
+    today = datetime.datetime.now()
+    days = 15 if region == 'NPC' else 7
+    tu_ngay = today.strftime("%d-%m-%Y")
+    den_ngay = (today + datetime.timedelta(days=days)).strftime("%d-%m-%Y")
+    
+    if not filtered_outages:
+        markup = InlineKeyboardMarkup()
+        markup.row(
+            InlineKeyboardButton("🔍 Tìm từ khóa khác", callback_data="manual_kw_init"),
+            InlineKeyboardButton("⬅️ Quay lại danh sách", callback_data=f"spc_bur_{bureau_code}" if region == 'SPC' else (f"npc_bur_{bureau_code}" if region == 'NPC' else f"cpc_bur_{bureau_code}"))
+        )
+        bot.send_message(
+            chat_id,
+            f"ℹ️ Không tìm thấy lịch cúp điện nào khớp với từ khóa **\"{text}\"** tại khu vực này trong những ngày tới.",
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+        return
+        
+    title = f" [TỪ KHÓA: {text.upper()}]"
+    formatted_messages = format_outage_messages(filtered_outages, tu_ngay, den_ngay, title)
+    
+    markup = InlineKeyboardMarkup()
+    markup.row(
+        InlineKeyboardButton("🔎 Tra cứu tiếp", callback_data=f"region_{region}"),
+        InlineKeyboardButton("🔍 Tìm từ khóa khác", callback_data="manual_kw_init")
+    )
+    
+    for msg_chunk in formatted_messages[:-1]:
+        bot.send_message(chat_id, msg_chunk, parse_mode="Markdown")
+    bot.send_message(chat_id, formatted_messages[-1], parse_mode="Markdown", reply_markup=markup)
 
 def daily_notification_loop():
     while True:
