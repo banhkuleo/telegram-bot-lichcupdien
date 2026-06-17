@@ -1046,9 +1046,10 @@ def send_welcome(message):
     btn_cpc = InlineKeyboardButton("⚡ EVN miền Trung (CPC)", callback_data="region_CPC")
     btn_npc = InlineKeyboardButton("⚡ EVN miền Bắc (NPC)", callback_data="region_NPC")
     btn_notify = InlineKeyboardButton("🔔 Nhận thông báo hằng ngày", callback_data="menu_notify")
+    btn_guide = InlineKeyboardButton("📖 Hướng dẫn sử dụng", callback_data="menu_guide")
     btn_feedback = InlineKeyboardButton("💬 Góp ý cải thiện", callback_data="menu_feedback")
     
-    markup.add(btn_spc, btn_cpc, btn_npc, btn_notify, btn_feedback)
+    markup.add(btn_spc, btn_cpc, btn_npc, btn_notify, btn_guide, btn_feedback)
     
     if is_admin_user(message.from_user.id):
         btn_admin_fb = InlineKeyboardButton("📋 Quản lý Góp ý (Admin)", callback_data="fb_list_unread")
@@ -1068,9 +1069,10 @@ def handle_back_main(call):
     btn_cpc = InlineKeyboardButton("⚡ EVN miền Trung (CPC)", callback_data="region_CPC")
     btn_npc = InlineKeyboardButton("⚡ EVN miền Bắc (NPC)", callback_data="region_NPC")
     btn_notify = InlineKeyboardButton("🔔 Nhận thông báo hằng ngày", callback_data="menu_notify")
+    btn_guide = InlineKeyboardButton("📖 Hướng dẫn sử dụng", callback_data="menu_guide")
     btn_feedback = InlineKeyboardButton("💬 Góp ý cải thiện", callback_data="menu_feedback")
     
-    markup.add(btn_spc, btn_cpc, btn_npc, btn_notify, btn_feedback)
+    markup.add(btn_spc, btn_cpc, btn_npc, btn_notify, btn_guide, btn_feedback)
     
     if is_admin_user(call.from_user.id):
         btn_admin_fb = InlineKeyboardButton("📋 Quản lý Góp ý (Admin)", callback_data="fb_list_unread")
@@ -1080,6 +1082,40 @@ def handle_back_main(call):
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=welcome_text,
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_guide')
+def handle_menu_guide(call):
+    safe_answer_callback(call.id)
+    text = (
+        "📖 **HƯỚNG DẪN SỬ DỤNG BOT LỊCH CÚP ĐIỆN**\n\n"
+        "**1. Tra cứu thủ công:**\n"
+        "👉 Nhấn chọn miền của bạn trên Menu chính (`⚡ EVN miền Nam (SPC)`, `⚡ EVN miền Trung (CPC)`, `⚡ EVN miền Bắc (NPC)`).\n"
+        "👉 Chọn tỉnh thành và đơn vị Điện lực trực thuộc.\n"
+        "👉 Bot sẽ hiển thị danh sách xã/phường có lịch cúp điện:\n"
+        "   - Nhấn chọn xã/phường cụ thể để lọc lịch cúp điện.\n"
+        "   - Chọn `🌟 Tất cả khu vực` để xem toàn bộ lịch cúp điện của huyện.\n"
+        "   - Chọn `🔍 Tìm theo từ khóa` để tự nhập tên đường, thôn, xóm hoặc trạm biến áp cần tìm kiếm.\n\n"
+        "**2. Nhận thông báo tự động hằng ngày:**\n"
+        "👉 Nhấn chọn `🔔 Nhận thông báo hằng ngày` -> Chọn `➕ Đăng ký thông báo`.\n"
+        "👉 Chọn miền, tỉnh thành và đơn vị Điện lực của bạn.\n"
+        "👉 Lựa chọn hình thức nhận tin nhắn:\n"
+        "   - **Đăng ký toàn bộ huyện:** Nhận tất cả thông báo cúp điện của huyện đó.\n"
+        "   - **Đăng ký theo xã/phường (SPC & NPC):** Chỉ nhận khi xã/phường đó có lịch cúp điện.\n"
+        "   - **Đăng ký theo từ khóa tự chọn (Khuyên dùng):** Bạn tự nhập tên đường, thôn, xóm hoặc trạm biến áp gần nhà (Ví dụ: `Hà Ra`, `Thôn 3`, `MBA T.65A`). Bot sẽ so khớp và chỉ gửi thông báo khi lịch cúp điện chứa từ khóa này.\n\n"
+        "**3. Quản lý thông báo đang nhận:**\n"
+        "👉 Nhấn `🔔 Nhận thông báo hằng ngày` -> Chọn `📋 Danh sách đang nhận` để kiểm tra các đăng ký hiện tại.\n"
+        "👉 Chọn `🔕 Tắt thông báo` nếu muốn hủy nhận tin nhắn của một khu vực hoặc tắt tất cả."
+    )
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🏠 Giao diện chính", callback_data="back_main"))
+    
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=text,
         parse_mode="Markdown",
         reply_markup=markup
     )
