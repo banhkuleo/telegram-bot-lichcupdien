@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 import datetime
 import urllib.request
 import urllib.parse
@@ -60,6 +61,11 @@ DB_LOCK = threading.RLock()
 _DB_INITIALIZED = False
 NOTIFICATION_SEND_LOCK = threading.Lock()
 
+CUSTOMER_PROVIDER_PREFIXES = {
+    "SPC": ("PB", "PK", "PC"),
+    "NPC": ("PA", "PH", "PM", "PN")
+}
+
 try:
     ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0"))
 except (ValueError, TypeError):
@@ -71,6 +77,22 @@ def now_vietnam():
 
 def utc_now_text():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+def normalize_customer_code(value):
+    return re.sub(r"\s+", "", value or "").upper()
+
+def detect_customer_provider(customer_code):
+    code = normalize_customer_code(customer_code)
+    if len(code) != 13 or not re.fullmatch(r"[A-Z0-9]{13}", code):
+        return None
+    for provider, prefixes in CUSTOMER_PROVIDER_PREFIXES.items():
+        if code.startswith(prefixes):
+            return provider
+    return None
+
+def mask_customer_code(customer_code):
+    code = normalize_customer_code(customer_code)
+    return f"{code[:2]}•••••••••{code[-2:]}"
 
 # DATABASE FUNCTIONS
 def init_db():
@@ -105,6 +127,24 @@ def init_db():
             """)
             ensure_table_column(conn, "daily_subscriptions", "company_code", "company_code TEXT")
             ensure_table_column(conn, "daily_subscriptions", "company_name", "company_name TEXT")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS customer_subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_user_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    username TEXT,
+                    first_name TEXT,
+                    provider TEXT NOT NULL,
+                    customer_code TEXT NOT NULL,
+                    customer_code_masked TEXT NOT NULL,
+                    notify_time TEXT NOT NULL DEFAULT '07:00',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_sent_date TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(chat_id, provider, customer_code)
+                )
+            """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS feedbacks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -248,6 +288,94 @@ def disable_all_subscriptions(chat_id):
         with get_db_connection() as conn:
             cur = conn.execute("""
                 UPDATE daily_subscriptions
+                SET enabled = 0, updated_at = ?
+                WHERE chat_id = ? AND enabled = 1
+            """, (utc_now_text(), chat_id))
+            conn.commit()
+            return cur.rowcount
+
+def save_customer_subscription(chat_id, from_user, provider, customer_code):
+    username, first_name = get_user_profile(from_user)
+    code = normalize_customer_code(customer_code)
+    now_text = utc_now_text()
+
+    with DB_LOCK:
+        with get_db_connection() as conn:
+            conn.execute("""
+                INSERT INTO customer_subscriptions (
+                    telegram_user_id, chat_id, username, first_name,
+                    provider, customer_code, customer_code_masked,
+                    notify_time, enabled, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(chat_id, provider, customer_code) DO UPDATE SET
+                    telegram_user_id = excluded.telegram_user_id,
+                    username = excluded.username,
+                    first_name = excluded.first_name,
+                    customer_code_masked = excluded.customer_code_masked,
+                    notify_time = excluded.notify_time,
+                    enabled = 1,
+                    updated_at = excluded.updated_at
+            """, (
+                from_user.id,
+                chat_id,
+                username,
+                first_name,
+                provider,
+                code,
+                mask_customer_code(code),
+                DAILY_NOTIFY_TIME,
+                now_text,
+                now_text
+            ))
+            conn.commit()
+
+def get_active_customer_subscriptions(chat_id):
+    with get_db_connection() as conn:
+        return conn.execute("""
+            SELECT *
+            FROM customer_subscriptions
+            WHERE chat_id = ? AND enabled = 1
+            ORDER BY provider, customer_code
+        """, (chat_id,)).fetchall()
+
+def get_due_customer_subscriptions(current_time, today_text):
+    with get_db_connection() as conn:
+        return conn.execute("""
+            SELECT *
+            FROM customer_subscriptions
+            WHERE enabled = 1
+              AND notify_time <= ?
+              AND (last_sent_date IS NULL OR last_sent_date != ?)
+            ORDER BY provider, chat_id
+        """, (current_time, today_text)).fetchall()
+
+def mark_customer_subscription_sent(subscription_id, today_text):
+    with DB_LOCK:
+        with get_db_connection() as conn:
+            conn.execute("""
+                UPDATE customer_subscriptions
+                SET last_sent_date = ?, updated_at = ?
+                WHERE id = ?
+            """, (today_text, utc_now_text(), subscription_id))
+            conn.commit()
+
+def disable_customer_subscription(subscription_id, chat_id):
+    with DB_LOCK:
+        with get_db_connection() as conn:
+            cur = conn.execute("""
+                UPDATE customer_subscriptions
+                SET enabled = 0, updated_at = ?
+                WHERE id = ? AND chat_id = ?
+            """, (utc_now_text(), subscription_id, chat_id))
+            conn.commit()
+            return cur.rowcount > 0
+
+def disable_all_customer_subscriptions(chat_id):
+    with DB_LOCK:
+        with get_db_connection() as conn:
+            cur = conn.execute("""
+                UPDATE customer_subscriptions
                 SET enabled = 0, updated_at = ?
                 WHERE chat_id = ? AND enabled = 1
             """, (utc_now_text(), chat_id))
@@ -420,24 +548,33 @@ def build_notification_menu_markup():
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton("➕ Đăng ký thông báo", callback_data="notify_subscribe"),
+        InlineKeyboardButton("🔑 Đăng ký theo mã khách hàng EVN", callback_data="notify_customer_subscribe"),
         InlineKeyboardButton("📋 Danh sách đang nhận", callback_data="notify_list"),
         InlineKeyboardButton("🔕 Tắt thông báo", callback_data="notify_disable_menu"),
         InlineKeyboardButton("🏠 Giao diện chính", callback_data="back_main")
     )
     return markup
 
-def format_subscription_list(subscriptions):
-    if not subscriptions:
+def format_subscription_list(subscriptions, customer_subscriptions=None):
+    customer_subscriptions = customer_subscriptions or []
+    if not subscriptions and not customer_subscriptions:
         return "ℹ️ Bạn chưa đăng ký nhận thông báo hằng ngày."
 
     lines = ["📋 **Danh sách thông báo hằng ngày đang nhận:**", ""]
-    for idx, sub in enumerate(subscriptions, 1):
+    index = 1
+    for sub in subscriptions:
         bureau_name = sub['bureau_name'] or sub['bureau_code']
-        lines.append(f"{idx}. **{sub['ward_name']}** - {bureau_name}")
+        lines.append(f"{index}. **{sub['ward_name']}** - {bureau_name}")
         lines.append(f"   ⏰ Giờ gửi: {sub['notify_time']} hằng ngày")
+        index += 1
+    for sub in customer_subscriptions:
+        lines.append(f"{index}. **Mã EVN {sub['provider']}: {sub['customer_code_masked']}**")
+        lines.append(f"   ⏰ Giờ gửi: {sub['notify_time']} hằng ngày")
+        index += 1
     return "\n".join(lines)
 
-def build_disable_subscriptions_markup(subscriptions):
+def build_disable_subscriptions_markup(subscriptions, customer_subscriptions=None):
+    customer_subscriptions = customer_subscriptions or []
     markup = InlineKeyboardMarkup(row_width=1)
     for sub in subscriptions:
         bureau_name = sub['bureau_name'] or sub['bureau_code']
@@ -445,8 +582,11 @@ def build_disable_subscriptions_markup(subscriptions):
         if len(label) > 60:
             label = label[:57] + "..."
         markup.add(InlineKeyboardButton(label, callback_data=f"disable_sub_{sub['id']}"))
+    for sub in customer_subscriptions:
+        label = f"🔕 Mã {sub['provider']}: {sub['customer_code_masked']}"
+        markup.add(InlineKeyboardButton(label, callback_data=f"disable_customer_sub_{sub['id']}"))
 
-    if subscriptions:
+    if subscriptions or customer_subscriptions:
         markup.add(InlineKeyboardButton("🔕 Tắt tất cả thông báo", callback_data="disable_all_subs"))
     markup.add(InlineKeyboardButton("🏠 Giao diện chính", callback_data="back_main"))
     return markup
@@ -702,7 +842,7 @@ def parse_spc_html_raw(html):
                     })
     return outages
 
-# Customer lookup removed
+# Bộ định dạng lịch cúp điện dùng chung
 
 # Format list of outages into message chunks
 def format_outage_messages(outages, tu_ngay, den_ngay, title_suffix=""):
@@ -760,49 +900,123 @@ def fetch_npc_outages(bureau_code):
         print(f"Error fetching NPC outages for {bureau_code}: {e}")
         return []
 
+def format_npc_time(value):
+    value = " ".join(value.split())
+    for date_format in (
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M",
+        "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M"
+    ):
+        try:
+            return datetime.datetime.strptime(value, date_format).strftime("%H:%M %d/%m/%Y")
+        except ValueError:
+            continue
+    return value
+
 def parse_npc_html_raw(html):
     soup = BeautifulSoup(html, 'html.parser')
     table = soup.find('table')
     if not table:
         return []
-        
+
+    all_rows = table.find_all('tr')
+    headers = []
+    header_row = all_rows[0] if all_rows else None
+    if table.find('thead'):
+        headers = [remove_accents(cell.get_text(' ', strip=True)) for cell in table.find('thead').find_all(['th', 'td'])]
+    elif header_row:
+        candidate_headers = [remove_accents(cell.get_text(' ', strip=True)) for cell in header_row.find_all(['th', 'td'])]
+        if header_row.find('th') or any(keyword in ' '.join(candidate_headers) for keyword in ('tu ngay', 'den ngay', 'pham vi', 'ly do')):
+            headers = candidate_headers
+
+    column_map = {'location': -1, 'start_time': -1, 'end_time': -1, 'reason': -1}
+    for index, header in enumerate(headers):
+        if any(keyword in header for keyword in ('pham vi', 'khu vuc', 'dia diem', 'khach hang')):
+            column_map['location'] = index
+        elif any(keyword in header for keyword in ('tu ngay', 'bat dau', 'tu thoi diem', 'tu gio')):
+            column_map['start_time'] = index
+        elif any(keyword in header for keyword in ('den ngay', 'ket thuc', 'den thoi diem', 'den gio')):
+            column_map['end_time'] = index
+        elif any(keyword in header for keyword in ('ly do', 'nguyen nhan', 'noi dung')):
+            column_map['reason'] = index
+
     tbody = table.find('tbody')
-    rows = tbody.find_all('tr') if tbody else table.find_all('tr')[1:]
-    
+    rows = tbody.find_all('tr') if tbody else all_rows
+    if not tbody and headers and rows:
+        rows = rows[1:]
     outages = []
     for row in rows:
         cells = row.find_all('td')
-        if len(cells) < 5:
+        if len(cells) < 4:
             continue
-            
-        text_cells = [c.text.strip() for c in cells]
-        if len(text_cells) >= 5:
-            location = text_cells[4]
-            start_raw = text_cells[2]
-            end_raw = text_cells[3]
-            
-            def format_time_str(val):
-                try:
-                    dt = datetime.datetime.strptime(val[:19], "%Y-%m-%d %H:%M:%S")
-                    return dt.strftime("%H:%M %d/%m/%Y")
-                except Exception:
-                    return val
-                    
-            start_fmt = format_time_str(start_raw)
-            end_fmt = format_time_str(end_raw)
-            time_str = f"Từ {start_fmt} - Đến {end_fmt}"
-            
-            reason = "Bảo trì định kỳ"
-            if len(text_cells) >= 6 and text_cells[5]:
-                reason = text_cells[5]
-                
-            if location and location != "Không có dữ liệu":
-                outages.append({
-                    'location': " ".join(location.split()),
-                    'time': " ".join(time_str.split()),
-                    'reason': " ".join(reason.split())
-                })
+        text_cells = [" ".join(cell.get_text(' ', strip=True).split()) for cell in cells]
+        count = len(text_cells)
+        location_index = column_map['location'] if column_map['location'] >= 0 else (4 if count > 4 else 1)
+        start_index = column_map['start_time'] if column_map['start_time'] >= 0 else (2 if count > 2 else -1)
+        end_index = column_map['end_time'] if column_map['end_time'] >= 0 else (3 if count > 3 else -1)
+        reason_index = column_map['reason'] if column_map['reason'] >= 0 else (5 if count > 5 else count - 1)
+
+        location = text_cells[location_index] if location_index < count else ""
+        start_raw = text_cells[start_index] if 0 <= start_index < count else ""
+        end_raw = text_cells[end_index] if 0 <= end_index < count else ""
+        reason = text_cells[reason_index] if 0 <= reason_index < count else "Bảo trì định kỳ"
+        if start_raw and end_raw:
+            time_text = f"Từ {format_npc_time(start_raw)} - Đến {format_npc_time(end_raw)}"
+        elif start_raw:
+            time_text = f"Từ {format_npc_time(start_raw)}"
+        else:
+            time_text = "Chưa rõ thời gian"
+
+        if location and location.lower() != "không có dữ liệu":
+            outages.append({
+                'location': location,
+                'time': " ".join(time_text.split()),
+                'reason': reason or "Bảo trì định kỳ"
+            })
     return outages
+
+
+def fetch_customer_outages(customer_code, provider=None):
+    code = normalize_customer_code(customer_code)
+    provider = provider or detect_customer_provider(code)
+    if not provider:
+        return None, "Mã khách hàng không được hỗ trợ."
+
+    today = now_vietnam().date()
+    start_date = today.strftime("%d-%m-%Y" if provider == "SPC" else "%d/%m/%Y")
+    days_ahead = 7 if provider == "SPC" else 15
+    end_date = (today + datetime.timedelta(days=days_ahead)).strftime("%d-%m-%Y" if provider == "SPC" else "%d/%m/%Y")
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+        'X-Requested-With': 'XMLHttpRequest'
+    }
+
+    if provider == "SPC":
+        url = "https://cskh.evnspc.vn/TraCuu/GetThongTinLichNgungGiamCungCapDien"
+        params = {
+            'maKH': code,
+            'tuNgay': start_date,
+            'denNgay': end_date,
+            'ChucNang': 'MaKhachHang'
+        }
+    else:
+        url = "https://cskh.npc.com.vn/ThongTinKhachHang/LichNgungGiamCungCapDienSPC"
+        params = {
+            'maKH': code,
+            'madvi': '',
+            'tuNgay': start_date,
+            'denNgay': end_date
+        }
+
+    try:
+        response = requests.get(url, headers=headers, params=params, verify=False, timeout=15)
+        if response.status_code != 200:
+            return None, f"Hệ thống {provider} trả về mã lỗi HTTP {response.status_code}."
+        outages = parse_spc_html_raw(response.text) if provider == "SPC" else parse_npc_html_raw(response.text)
+        return outages, None
+    except Exception as error:
+        print(f"Error fetching {provider} customer outages: {error}")
+        return None, f"Không thể kết nối hệ thống EVN {provider}."
 
 
 # EVN CPC (CENTRAL REGION) API CALLS
@@ -1045,11 +1259,12 @@ def send_welcome(message):
     btn_spc = InlineKeyboardButton("⚡ EVN miền Nam (SPC)", callback_data="region_SPC")
     btn_cpc = InlineKeyboardButton("⚡ EVN miền Trung (CPC)", callback_data="region_CPC")
     btn_npc = InlineKeyboardButton("⚡ EVN miền Bắc (NPC)", callback_data="region_NPC")
+    btn_customer = InlineKeyboardButton("🔎 Tra cứu theo mã khách hàng EVN", callback_data="menu_customer")
     btn_notify = InlineKeyboardButton("🔔 Nhận thông báo hằng ngày", callback_data="menu_notify")
     btn_guide = InlineKeyboardButton("📖 Hướng dẫn sử dụng", callback_data="menu_guide")
     btn_feedback = InlineKeyboardButton("💬 Góp ý cải thiện", callback_data="menu_feedback")
     
-    markup.add(btn_spc, btn_cpc, btn_npc, btn_notify, btn_guide, btn_feedback)
+    markup.add(btn_spc, btn_cpc, btn_npc, btn_customer, btn_notify, btn_guide, btn_feedback)
     
     if is_admin_user(message.from_user.id):
         btn_admin_fb = InlineKeyboardButton("📋 Quản lý Góp ý (Admin)", callback_data="fb_list_unread")
@@ -1068,11 +1283,12 @@ def handle_back_main(call):
     btn_spc = InlineKeyboardButton("⚡ EVN miền Nam (SPC)", callback_data="region_SPC")
     btn_cpc = InlineKeyboardButton("⚡ EVN miền Trung (CPC)", callback_data="region_CPC")
     btn_npc = InlineKeyboardButton("⚡ EVN miền Bắc (NPC)", callback_data="region_NPC")
+    btn_customer = InlineKeyboardButton("🔎 Tra cứu theo mã khách hàng EVN", callback_data="menu_customer")
     btn_notify = InlineKeyboardButton("🔔 Nhận thông báo hằng ngày", callback_data="menu_notify")
     btn_guide = InlineKeyboardButton("📖 Hướng dẫn sử dụng", callback_data="menu_guide")
     btn_feedback = InlineKeyboardButton("💬 Góp ý cải thiện", callback_data="menu_feedback")
     
-    markup.add(btn_spc, btn_cpc, btn_npc, btn_notify, btn_guide, btn_feedback)
+    markup.add(btn_spc, btn_cpc, btn_npc, btn_customer, btn_notify, btn_guide, btn_feedback)
     
     if is_admin_user(call.from_user.id):
         btn_admin_fb = InlineKeyboardButton("📋 Quản lý Góp ý (Admin)", callback_data="fb_list_unread")
@@ -1097,14 +1313,16 @@ def handle_menu_guide(call):
         "👉 Bot sẽ hiển thị danh sách xã/phường có lịch cúp điện:\n"
         "   - Nhấn chọn xã/phường cụ thể để lọc lịch cúp điện.\n"
         "   - Chọn `🌟 Tất cả khu vực` để xem toàn bộ lịch cúp điện của huyện.\n"
-        "   - Chọn `🔍 Tìm theo từ khóa` để tự nhập tên đường, thôn, xóm hoặc trạm biến áp cần tìm kiếm.\n\n"
+        "   - Chọn `🔍 Tìm theo từ khóa` để tự nhập tên đường, thôn, xóm hoặc trạm biến áp cần tìm kiếm.\n"
+        "👉 Hoặc chọn `🔎 Tra cứu theo mã khách hàng EVN`; bot tự nhận diện SPC/NPC theo đầu mã 13 ký tự.\n\n"
         "**2. Nhận thông báo tự động hằng ngày:**\n"
         "👉 Nhấn chọn `🔔 Nhận thông báo hằng ngày` -> Chọn `➕ Đăng ký thông báo`.\n"
         "👉 Chọn miền, tỉnh thành và đơn vị Điện lực của bạn.\n"
         "👉 Lựa chọn hình thức nhận tin nhắn:\n"
         "   - **Đăng ký toàn bộ huyện:** Nhận tất cả thông báo cúp điện của huyện đó.\n"
         "   - **Đăng ký theo xã/phường (SPC & NPC):** Chỉ nhận khi xã/phường đó có lịch cúp điện.\n"
-        "   - **Đăng ký theo từ khóa tự chọn (Khuyên dùng):** Bạn tự nhập tên đường, thôn, xóm hoặc trạm biến áp gần nhà (Ví dụ: `Hà Ra`, `Thôn 3`, `MBA T.65A`). Bot sẽ so khớp và chỉ gửi thông báo khi lịch cúp điện chứa từ khóa này.\n\n"
+        "   - **Đăng ký theo từ khóa tự chọn (Khuyên dùng):** Bạn tự nhập tên đường, thôn, xóm hoặc trạm biến áp gần nhà (Ví dụ: `Hà Ra`, `Thôn 3`, `MBA T.65A`). Bot sẽ so khớp và chỉ gửi thông báo khi lịch cúp điện chứa từ khóa này.\n"
+        "   - **Đăng ký theo mã khách hàng EVN:** Nhập mã 13 ký tự; mã PB/PK/PC dùng EVNSPC, mã PA/PH/PM/PN dùng EVNNPC. Bot chỉ gửi khi mã có lịch cúp điện.\n\n"
         "**3. Quản lý thông báo đang nhận:**\n"
         "👉 Nhấn `🔔 Nhận thông báo hằng ngày` -> Chọn `📋 Danh sách đang nhận` để kiểm tra các đăng ký hiện tại.\n"
         "👉 Chọn `🔕 Tắt thông báo` nếu muốn hủy nhận tin nhắn của một khu vực hoặc tắt tất cả."
@@ -1279,6 +1497,14 @@ def handle_cpc_company(call):
 
 # BUREAU SELECTORS (SPC: SHOW COMMUNES, CPC: AUTO CAPTCHA & Outages)
 
+def spc_commune_key(name):
+    return 'h' + hashlib.sha256(name.encode('utf-8')).hexdigest()[:24]
+
+def resolve_spc_commune(communes, key):
+    if key == 'all' or key in communes:
+        return key
+    return next((name for name in communes if spc_commune_key(name) == key), None)
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('spc_bur_'))
 def handle_spc_bureau(call):
     bureau_code = call.data.split('_')[2]
@@ -1326,7 +1552,7 @@ def handle_spc_bureau(call):
     markup = InlineKeyboardMarkup(row_width=2)
     buttons = []
     for comm_name, items in sorted(communes.items()):
-        buttons.append(InlineKeyboardButton(f"{comm_name} ({len(items)})", callback_data=f"spc_comm_{comm_name}"))
+        buttons.append(InlineKeyboardButton(f"{comm_name} ({len(items)})", callback_data=f"spc_comm_{spc_commune_key(comm_name)}"))
         
     markup.add(*buttons)
     markup.row(
@@ -1344,7 +1570,7 @@ def handle_spc_bureau(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('spc_comm_'))
 def handle_spc_commune_select(call):
-    commune_name = call.data.replace('spc_comm_', '')
+    commune_key = call.data.removeprefix('spc_comm_')
     chat_id = call.message.chat.id
     
     safe_answer_callback(call.id)
@@ -1358,6 +1584,11 @@ def handle_spc_commune_select(call):
     outages = session_data['outages']
     communes = session_data['communes']
     bureau_code = session_data['bureau_code']
+    commune_name = resolve_spc_commune(communes, commune_key)
+    if commune_name is None:
+        bot.send_message(chat_id, "❌ Khu vực không còn trong phiên tra cứu. Vui lòng gửi /start để chọn lại.")
+        return
+    commune_key = 'all' if commune_name == 'all' else spc_commune_key(commune_name)
     
     today = datetime.datetime.now()
     tu_ngay = today.strftime("%d-%m-%Y")
@@ -1375,7 +1606,7 @@ def handle_spc_commune_select(call):
     markup = InlineKeyboardMarkup()
     markup.row(
         InlineKeyboardButton("🔎 Tìm kiếm tiếp", callback_data="region_SPC"),
-        InlineKeyboardButton("🔄 Tải lại lịch", callback_data=f"spc_ref_reload_{bureau_code}_{commune_name}")
+        InlineKeyboardButton("🔄 Tải lại lịch", callback_data=f"spc_ref_reload_{bureau_code}_{commune_key}")
     )
     
     for msg_chunk in formatted_messages[:-1]:
@@ -1384,9 +1615,12 @@ def handle_spc_commune_select(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('spc_ref_reload_'))
 def handle_spc_ref_reload(call):
-    parts = call.data.split('_')
+    parts = call.data.split('_', 4)
+    if len(parts) != 5 or not parts[3] or not parts[4]:
+        safe_answer_callback(call.id, text="Dữ liệu nút không hợp lệ. Vui lòng gửi /start.")
+        return
     bureau_code = parts[3]
-    commune_name = parts[4]
+    commune_key = parts[4]
     chat_id = call.message.chat.id
     
     safe_answer_callback(call.id, text="Đang làm mới lịch cúp điện...")
@@ -1417,6 +1651,12 @@ def handle_spc_ref_reload(call):
         'outages': outages,
         'communes': communes
     }
+
+    commune_name = resolve_spc_commune(communes, commune_key)
+    if commune_name is None:
+        bot.send_message(chat_id, "ℹ️ Khu vực đã chọn không còn trong lịch mới. Vui lòng gửi /start để chọn lại.")
+        return
+    commune_key = 'all' if commune_name == 'all' else spc_commune_key(commune_name)
     
     today = datetime.datetime.now()
     tu_ngay = today.strftime("%d-%m-%Y")
@@ -1434,7 +1674,7 @@ def handle_spc_ref_reload(call):
     markup = InlineKeyboardMarkup()
     markup.row(
         InlineKeyboardButton("🔎 Tìm kiếm tiếp", callback_data="region_SPC"),
-        InlineKeyboardButton("🔄 Tải lại lịch", callback_data=f"spc_ref_reload_{bureau_code}_{commune_name}")
+        InlineKeyboardButton("🔄 Tải lại lịch", callback_data=f"spc_ref_reload_{bureau_code}_{commune_key}")
     )
     
     for msg_chunk in formatted_messages[:-1]:
@@ -1528,7 +1768,137 @@ def handle_cpc_bureau_select(call):
     )
 
 
-# Customer code callback handlers removed
+# Tra cứu theo mã khách hàng EVN SPC/NPC
+
+def build_customer_result_markup():
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("🔔 Nhận thông báo theo mã này", callback_data="customer_subscribe"),
+        InlineKeyboardButton("🔄 Tải lại lịch", callback_data="customer_refresh"),
+        InlineKeyboardButton("🏠 Giao diện chính", callback_data="back_main")
+    )
+    return markup
+
+def send_customer_lookup_result(chat_id, customer_code, provider, outages, error=None):
+    code = normalize_customer_code(customer_code)
+    USER_SESSIONS[chat_id] = {
+        'customer_code': code,
+        'customer_provider': provider
+    }
+    masked_code = mask_customer_code(code)
+    if error:
+        messages = [
+            f"⚠️ Không thể tra cứu mã khách hàng **{masked_code}** trên EVN miền {provider}.\n\n{error}"
+        ]
+    elif not outages:
+        today = now_vietnam().date()
+        days_ahead = 7 if provider == "SPC" else 15
+        end_date = today + datetime.timedelta(days=days_ahead)
+        messages = [
+            f"ℹ️ Không có lịch cúp điện dự kiến cho mã khách hàng **{masked_code}** từ {today.strftime('%d-%m-%Y')} đến {end_date.strftime('%d-%m-%Y')}."
+        ]
+    else:
+        today = now_vietnam().date()
+        days_ahead = 7 if provider == "SPC" else 15
+        messages = format_outage_messages(
+            outages,
+            today.strftime("%d-%m-%Y"),
+            (today + datetime.timedelta(days=days_ahead)).strftime("%d-%m-%Y"),
+            title_suffix=f"[EVN {provider} - MÃ {masked_code}]"
+        )
+
+    for result_message in messages[:-1]:
+        bot.send_message(chat_id, result_message, parse_mode="Markdown")
+    bot.send_message(
+        chat_id,
+        messages[-1],
+        parse_mode="Markdown",
+        reply_markup=build_customer_result_markup()
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_customer')
+def handle_menu_customer(call):
+    safe_answer_callback(call.id)
+    chat_id = call.message.chat.id
+    bot.clear_step_handler_by_chat_id(chat_id=chat_id)
+    safe_delete_message(chat_id, call.message.message_id)
+    message = bot.send_message(
+        chat_id,
+        "⌨️ Nhập mã khách hàng EVN gồm **13 ký tự**.\n\n"
+        "SPC: bắt đầu bằng **PB, PK, PC**. NPC: bắt đầu bằng **PA, PH, PM, PN**.\n"
+        "Có thể nhập kèm khoảng trắng. Ví dụ: **PB22030392316**.\n\n"
+        "Gửi /start để hủy.",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(message, process_customer_code_step)
+
+def customer_code_retry(message, prompt):
+    retry_message = bot.reply_to(message, prompt, parse_mode="Markdown")
+    bot.register_next_step_handler(retry_message, process_customer_code_step)
+
+def process_customer_code_step(message):
+    text = normalize_customer_code(message.text)
+    if text.startswith('/'):
+        bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
+        if text.startswith('/start') or text.startswith('/help'):
+            send_welcome(message)
+        return
+
+    provider = detect_customer_provider(text)
+    if not provider:
+        customer_code_retry(
+            message,
+            "❌ Mã không đúng định dạng. Mã phải có đúng 13 ký tự và bắt đầu bằng **PB/PK/PC** (SPC) hoặc **PA/PH/PM/PN** (NPC).\n\nNhập lại hoặc gửi /start để hủy."
+        )
+        return
+
+    loading_message = bot.send_message(
+        message.chat.id,
+        f"🔄 Đang tra cứu mã khách hàng **{mask_customer_code(text)}** trên EVN miền {provider}...",
+        parse_mode="Markdown"
+    )
+    outages, error = fetch_customer_outages(text, provider)
+    safe_delete_message(message.chat.id, loading_message.message_id)
+    send_customer_lookup_result(message.chat.id, text, provider, outages or [], error)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'customer_refresh')
+def handle_customer_refresh(call):
+    chat_id = call.message.chat.id
+    session = USER_SESSIONS.get(chat_id, {})
+    code = session.get('customer_code')
+    provider = session.get('customer_provider')
+    safe_answer_callback(call.id, text="Đang làm mới lịch cúp điện...")
+    if not code or not provider:
+        bot.send_message(chat_id, "❌ Phiên tra cứu đã hết hạn. Vui lòng chọn tra cứu theo mã khách hàng lại.")
+        return
+
+    safe_delete_message(chat_id, call.message.message_id)
+    loading_message = bot.send_message(chat_id, "🔄 Đang tải lịch cúp điện mới nhất...")
+    outages, error = fetch_customer_outages(code, provider)
+    safe_delete_message(chat_id, loading_message.message_id)
+    send_customer_lookup_result(chat_id, code, provider, outages or [], error)
+
+@bot.callback_query_handler(func=lambda call: call.data == 'customer_subscribe')
+def handle_customer_subscribe(call):
+    chat_id = call.message.chat.id
+    session = USER_SESSIONS.get(chat_id, {})
+    code = session.get('customer_code')
+    provider = session.get('customer_provider')
+    safe_answer_callback(call.id)
+    if not code or not provider:
+        bot.send_message(chat_id, "❌ Phiên tra cứu đã hết hạn. Vui lòng tra cứu lại mã khách hàng.")
+        return
+
+    save_customer_subscription(chat_id, call.from_user, provider, code)
+    bot.send_message(
+        chat_id,
+        f"✅ Đã đăng ký thông báo hằng ngày theo mã **{mask_customer_code(code)}** (EVN {provider}).\n\n"
+        f"Giờ gửi: **{DAILY_NOTIFY_TIME}**. Bot chỉ gửi khi mã này có lịch cúp điện.",
+        parse_mode="Markdown",
+        reply_markup=build_notification_actions_markup()
+    )
+
+# Khôi phục callback tra cứu mã khách hàng
 
 # NPC REGIONAL MANUAL HANDLERS
 @bot.callback_query_handler(func=lambda call: call.data == 'region_NPC')
@@ -2003,7 +2373,7 @@ def handle_menu_notify(call):
     safe_answer_callback(call.id)
     text = (
         "🔔 **Thông báo lịch cúp điện hằng ngày**\n\n"
-        f"Bot sẽ gửi lịch lúc **{DAILY_NOTIFY_TIME}** mỗi ngày theo xã/phường/khu vực bạn đăng ký."
+        f"Bot sẽ kiểm tra lúc **{DAILY_NOTIFY_TIME}** mỗi ngày theo khu vực hoặc mã khách hàng EVN bạn đăng ký."
     )
     markup = build_notification_menu_markup()
     bot.edit_message_text(
@@ -2022,11 +2392,12 @@ def handle_notify_subscribe(call):
         "Vui lòng chọn khu vực bạn muốn đăng ký:"
     )
     markup = InlineKeyboardMarkup(row_width=1)
+    btn_customer = InlineKeyboardButton("🔑 Theo mã khách hàng EVN (SPC/NPC)", callback_data="notify_customer_subscribe")
     btn_spc = InlineKeyboardButton("⚡ EVN miền Nam (SPC)", callback_data="sub_region_SPC")
     btn_cpc = InlineKeyboardButton("⚡ EVN miền Trung (CPC)", callback_data="sub_region_CPC")
     btn_npc = InlineKeyboardButton("⚡ EVN miền Bắc (NPC)", callback_data="sub_region_NPC")
     btn_back = InlineKeyboardButton("⬅️ Quản lý thông báo", callback_data="menu_notify")
-    markup.add(btn_spc, btn_cpc, btn_npc, btn_back)
+    markup.add(btn_customer, btn_spc, btn_cpc, btn_npc, btn_back)
     
     bot.edit_message_text(
         chat_id=call.message.chat.id,
@@ -2034,6 +2405,53 @@ def handle_notify_subscribe(call):
         text=text,
         parse_mode="Markdown",
         reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == 'notify_customer_subscribe')
+def handle_notify_customer_subscribe(call):
+    safe_answer_callback(call.id)
+    chat_id = call.message.chat.id
+    bot.clear_step_handler_by_chat_id(chat_id=chat_id)
+    safe_delete_message(chat_id, call.message.message_id)
+    message = bot.send_message(
+        chat_id,
+        "🔑 Nhập mã khách hàng EVN gồm **13 ký tự** để nhận thông báo hằng ngày.\n\n"
+        "SPC: **PB, PK, PC**. NPC: **PA, PH, PM, PN**.\n"
+        "Bot tự nhận diện miền theo đầu mã và chỉ gửi khi có lịch cúp điện.\n\n"
+        "Gửi /start để hủy.",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(message, process_customer_subscription_step)
+
+def process_customer_subscription_step(message):
+    code = normalize_customer_code(message.text)
+    if code.startswith('/'):
+        bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
+        if code.startswith('/start') or code.startswith('/help'):
+            send_welcome(message)
+        return
+
+    provider = detect_customer_provider(code)
+    if not provider:
+        retry_message = bot.reply_to(
+            message,
+            "❌ Mã không đúng định dạng. Mã phải có đúng 13 ký tự và bắt đầu bằng **PB/PK/PC** (SPC) hoặc **PA/PH/PM/PN** (NPC).\n\nNhập lại hoặc gửi /start để hủy.",
+            parse_mode="Markdown"
+        )
+        bot.register_next_step_handler(retry_message, process_customer_subscription_step)
+        return
+
+    save_customer_subscription(message.chat.id, message.from_user, provider, code)
+    USER_SESSIONS[message.chat.id] = {
+        'customer_code': code,
+        'customer_provider': provider
+    }
+    bot.send_message(
+        message.chat.id,
+        f"✅ Đã đăng ký thông báo theo mã **{mask_customer_code(code)}** (EVN {provider}).\n\n"
+        f"Bot kiểm tra lúc **{DAILY_NOTIFY_TIME}** mỗi ngày và chỉ gửi khi có lịch cúp điện.",
+        parse_mode="Markdown",
+        reply_markup=build_notification_actions_markup()
     )
 
 @bot.callback_query_handler(func=lambda call: call.data == 'sub_region_SPC')
@@ -2358,10 +2776,11 @@ def handle_sub_cpc_bureau(call):
 def handle_notify_list(call):
     safe_answer_callback(call.id)
     subscriptions = get_active_subscriptions(call.message.chat.id)
+    customer_subscriptions = get_active_customer_subscriptions(call.message.chat.id)
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        text=format_subscription_list(subscriptions),
+        text=format_subscription_list(subscriptions, customer_subscriptions),
         parse_mode="Markdown",
         reply_markup=build_notification_actions_markup()
     )
@@ -2370,17 +2789,19 @@ def handle_notify_list(call):
 def handle_notify_disable_menu(call):
     safe_answer_callback(call.id)
     subscriptions = get_active_subscriptions(call.message.chat.id)
+    customer_subscriptions = get_active_customer_subscriptions(call.message.chat.id)
+    has_subscriptions = subscriptions or customer_subscriptions
     text = (
         "🔕 **Tắt thông báo hằng ngày**\n\n"
-        "Chọn khu vực muốn tắt:"
-        if subscriptions
+        "Chọn khu vực hoặc mã khách hàng muốn tắt:"
+        if has_subscriptions
         else "ℹ️ Bạn chưa có thông báo hằng ngày nào đang bật."
     )
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         text=text,
-        reply_markup=build_disable_subscriptions_markup(subscriptions)
+        reply_markup=build_disable_subscriptions_markup(subscriptions, customer_subscriptions)
     )
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('disable_sub_'))
@@ -2394,18 +2815,41 @@ def handle_disable_sub(call):
     disabled = disable_subscription(sub_id, call.message.chat.id)
     safe_answer_callback(call.id, text="Đã tắt thông báo." if disabled else "Thất bại.")
     subscriptions = get_active_subscriptions(call.message.chat.id)
+    customer_subscriptions = get_active_customer_subscriptions(call.message.chat.id)
     
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        text="✅ Đã tắt nhận thông báo khu vực này.\n\n" + format_subscription_list(subscriptions),
+        text="✅ Đã tắt nhận thông báo khu vực này.\n\n" + format_subscription_list(subscriptions, customer_subscriptions),
+        parse_mode="Markdown",
+        reply_markup=build_notification_actions_markup()
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('disable_customer_sub_'))
+def handle_disable_customer_sub(call):
+    try:
+        subscription_id = int(call.data.split('_')[3])
+    except ValueError:
+        safe_answer_callback(call.id, text="Yêu cầu không hợp lệ.")
+        return
+
+    disabled = disable_customer_subscription(subscription_id, call.message.chat.id)
+    safe_answer_callback(call.id, text="Đã tắt thông báo." if disabled else "Thất bại.")
+    subscriptions = get_active_subscriptions(call.message.chat.id)
+    customer_subscriptions = get_active_customer_subscriptions(call.message.chat.id)
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="✅ Đã tắt thông báo theo mã EVN.\n\n" + format_subscription_list(subscriptions, customer_subscriptions),
         parse_mode="Markdown",
         reply_markup=build_notification_actions_markup()
     )
 
 @bot.callback_query_handler(func=lambda call: call.data == 'disable_all_subs')
 def handle_disable_all_subs(call):
-    count = disable_all_subscriptions(call.message.chat.id)
+    daily_count = disable_all_subscriptions(call.message.chat.id)
+    customer_count = disable_all_customer_subscriptions(call.message.chat.id)
+    count = daily_count + customer_count
     safe_answer_callback(call.id, text=f"Đã tắt {count} thông báo.")
     
     bot.edit_message_text(
@@ -2637,81 +3081,105 @@ def run_due_daily_notifications():
         now = now_vietnam()
         today_text = now.date().isoformat()
         due_subscriptions = get_due_subscriptions(now.strftime("%H:%M"), today_text)
-        if not due_subscriptions:
+        due_customer_subscriptions = get_due_customer_subscriptions(now.strftime("%H:%M"), today_text)
+        if not due_subscriptions and not due_customer_subscriptions:
             return
 
         schedule_cache = {}
         for sub in due_subscriptions:
             bureau_code = sub['bureau_code']
-            company_code = sub['company_code']
-            cache_key = (company_code, bureau_code)
-            
-            # Determine region SPC vs CPC vs NPC
+            company_code = sub['company_code'] or ''
+            cache_key = ("area", company_code, bureau_code)
+
             org_code = get_cpc_org_code(bureau_code)
             is_cpc = org_code is not None
-            is_npc = company_code in companies_dict_npc or company_code.startswith("PA") or company_code.startswith("PH") or company_code.startswith("PN")
-            
+            is_npc = company_code in companies_dict_npc or company_code.startswith(("PA", "PH", "PM", "PN"))
+
             if cache_key not in schedule_cache:
                 if is_cpc:
-                    # CPC direct fetch
                     items = fetch_cpc_outages_direct(org_code, bureau_code)
                     if items is None:
                         schedule_cache[cache_key] = "Không thể kết nối hoặc hệ thống EVNCPC bận."
                     else:
-                        outages = []
-                        for it in items:
-                            outages.append({
-                                'location': it.get('stationName', 'N/A'),
-                                'time': f"Từ {it.get('fromDateStr', 'N/A')} - Đến {it.get('toDateStr', 'N/A')}",
-                                'reason': it.get('reason', 'N/A')
-                            })
-                        schedule_cache[cache_key] = outages
+                        schedule_cache[cache_key] = [
+                            {
+                                'location': item.get('stationName', 'N/A'),
+                                'time': f"Từ {item.get('fromDateStr', 'N/A')} - Đến {item.get('toDateStr', 'N/A')}",
+                                'reason': item.get('reason', 'N/A')
+                            }
+                            for item in items
+                        ]
                 elif is_npc:
-                    # NPC fetch
                     schedule_cache[cache_key] = fetch_npc_outages(bureau_code)
                 else:
-                    # SPC fetch
                     schedule_cache[cache_key] = fetch_raw_outages_spc(bureau_code)
 
             try:
                 source_data = schedule_cache[cache_key]
                 if isinstance(source_data, str):
                     schedule_data = (
-                        f"⚠️ Không thể lấy lịch cúp điện hôm nay từ hệ thống EVN.\n\n"
+                        "⚠️ Không thể lấy lịch cúp điện hôm nay từ hệ thống EVN.\n\n"
                         f"Chi tiết: {source_data}"
                     )
                 else:
-                    # filter by ward or keyword if needed
                     if sub['ward_key'].startswith('key:'):
-                        kw = remove_accents(sub['ward_key'].replace('key:', ''))
-                        outages = [item for item in source_data if (kw in remove_accents(item['location']) or kw in remove_accents(item['reason']))]
+                        keyword = remove_accents(sub['ward_key'].replace('key:', ''))
+                        outages = [
+                            item for item in source_data
+                            if keyword in remove_accents(item['location']) or keyword in remove_accents(item['reason'])
+                        ]
                     elif not is_cpc and sub['ward_key'] != 'all':
                         outages = [item for item in source_data if extract_commune(item['location']) == sub['ward_key']]
                     else:
                         outages = source_data
-                    
-                    tu_ngay = now.strftime("%d-%m-%Y")
+
                     days_ahead = 15 if is_npc else 7
-                    den_ngay = (now + datetime.timedelta(days=days_ahead)).strftime("%d-%m-%Y")
-                    
-                    ward_suffix = f" [{sub['ward_name'].upper()}]" if sub['ward_name'] != 'Tất cả' else ""
                     schedule_data = format_outage_messages(
                         outages,
-                        tu_ngay,
-                        den_ngay,
-                        title_suffix=ward_suffix
+                        now.strftime("%d-%m-%Y"),
+                        (now + datetime.timedelta(days=days_ahead)).strftime("%d-%m-%Y"),
+                        title_suffix=f" [{sub['ward_name'].upper()}]" if sub['ward_name'] != 'Tất cả' else ""
                     )
 
                 schedule_data = add_daily_notification_header(schedule_data)
-                send_schedule_result(
-                    sub['chat_id'],
-                    schedule_data,
-                    build_notification_actions_markup()
-                )
-            except Exception as e:
-                print(f"Error sending daily notification to chat {sub['chat_id']}: {e}")
+                send_schedule_result(sub['chat_id'], schedule_data, build_notification_actions_markup())
+            except Exception as error:
+                print(f"Error sending daily notification to chat {sub['chat_id']}: {error}")
             finally:
                 mark_subscription_sent(sub['id'], today_text)
+
+        for sub in due_customer_subscriptions:
+            code = sub['customer_code']
+            provider = sub['provider']
+            cache_key = ("customer", provider, code)
+            if cache_key not in schedule_cache:
+                outages, error = fetch_customer_outages(code, provider)
+                schedule_cache[cache_key] = error if error else outages
+
+            try:
+                source_data = schedule_cache[cache_key]
+                if isinstance(source_data, str):
+                    print(f"Bỏ qua thông báo mã EVN {sub['customer_code_masked']}: {source_data}")
+                    continue
+                if not source_data:
+                    continue
+
+                days_ahead = 7 if provider == "SPC" else 15
+                schedule_data = format_outage_messages(
+                    source_data,
+                    now.strftime("%d-%m-%Y"),
+                    (now + datetime.timedelta(days=days_ahead)).strftime("%d-%m-%Y"),
+                    title_suffix=f" [EVN {provider} - MÃ {sub['customer_code_masked']}]"
+                )
+                send_schedule_result(
+                    sub['chat_id'],
+                    add_daily_notification_header(schedule_data),
+                    build_notification_actions_markup()
+                )
+            except Exception as error:
+                print(f"Error sending customer notification to chat {sub['chat_id']}: {error}")
+            finally:
+                mark_customer_subscription_sent(sub['id'], today_text)
     finally:
         NOTIFICATION_SEND_LOCK.release()
 
